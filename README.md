@@ -8,8 +8,8 @@ OPL3USB is a board plug into usb works as a serial port (Arduino) and use a OPL3
 
 *modified OPL3LPT*
 means 3 lines added :
-  1. DB25-13--------VCC---------5V   ( if your opl3lpt makes noise , use the original power line instead )
-  2. DB25-14--------IC----------RST
-  3. DB25-15--------RD----------HC12
+  1. DB25-13--------VCC---------5V      ( if your opl3lpt makes noise , use the original power line instead )
+  2. DB25-14--------IC----------YMF262-P3/YM3812-P3
+  3. DB25-15--------RD----------YMF262-P7/YM3812-P6
    
 ![模拟图](https://github.com/zhblue/OPL3USB/blob/main/OPL3USB.png?raw=true)
