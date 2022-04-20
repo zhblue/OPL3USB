@@ -12,4 +12,4 @@ means 3 lines added :
   2. DB25-14--------IC----------RST
   3. DB25-15--------RD----------HC12
    
-  
+![模拟图](https://github.com/zhblue/OPL3USB/blob/main/OPL3USB.png?raw=true)
