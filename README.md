@@ -12,4 +12,6 @@ means 3 lines added :
   2. DB25-14--------IC----------YMF262-P3/YM3812-P3
   3. DB25-15--------RD----------YMF262-P7/YM3812-P6
    
+Created using free version of LCEDA https://lceda.cn/
+   
 ![模拟图](https://github.com/zhblue/OPL3USB/blob/main/OPL3USB.png?raw=true)
