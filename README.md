@@ -6,7 +6,7 @@ OPL3USB is based on:
 
 OPL3USB is a board plug into usb works as a serial port (Arduino) and use a OPL3LPT (modified) as an OPL3 sound card for Dosbox-X.
 
-This project can be a low cost replacement to SudoMaker's RetroWave if you already have an Arduino-nano or Arduino-UNO.
+This project can be a low cost replacement to [SudoMaker's RetroWave](https://github.com/SudoMaker/RetroWave) if you already have an Arduino-nano or Arduino-UNO.
 
 *modified OPL3LPT*
 means 3 lines added :
