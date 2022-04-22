@@ -11,7 +11,8 @@ means 3 lines added :
   1. DB25-13--------VCC---------5V      ( if your opl3lpt makes noise , use the original power line instead )
   2. DB25-14--------IC----------YMF262-P3/YM3812-P3
   3. DB25-15--------RD----------YMF262-P7/YM3812-P6
-the clone verion above has already include these modification.
+   
+***the clone verion above has already include these modification.***
 
 Created using free version of LCEDA https://lceda.cn/
    
