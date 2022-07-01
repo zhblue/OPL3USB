@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "serial.h"
+#include <dirent.h>
 #include <windows.h>
 #include <conio.h> 
 #define KEY_UP     72  //? 
@@ -9,6 +10,9 @@
 #define VGM_HEADER_LEN (0x80)
 #define SAMPLE_RATE (44100)
 PORT COM1;
+float speed = SAMPLE_RATE/900.0f;
+
+
 int ld_int(char * p){
    return (p[0]&0xff+(p[1]&0xff)*256)+((p[2]&0xff)*256*256);
 }
@@ -72,35 +76,21 @@ void reset()
 	 }
 	 
 	Sleep(500);
-    //OPL3off();
+    OPL3off();
 }
 void nop(){
 	for(int i=0;i<1000;i++);
 }
-int main(int n,char ** argv)
-{
-	int com_num=4;
-    long long wait=0;
-	
-	float speed = SAMPLE_RATE/900.0f;
-	char vgm_header[VGM_HEADER_LEN]={0};
-	int loop=8;
-	const char * good[]={"jy.vgm","pal.vgm","doom.vgm","ultima.vgm","sandy.vgm","queen.vgm","axe.vgm","rain.vgm","zanac.vgm"};
-	const char * vgmfile="jy.vgm";
-	if (n>=2) vgmfile=argv[1]; else printf("Example:%s %s com%d\n",argv[0],vgmfile,com_num);
-	if (n>=3) sscanf(argv[2],"com%d",&com_num);
-	if (n>=4) sscanf(argv[3],"%f",&speed);
-	
-	printf("open com%d \n",com_num);
-	COM1 = serial_init(com_num, 115200, 8, 1 , 0);
-    
-	char op[3]={0};
+void playFile(char * vgmfile){
+    int wait=0;
+    char op[3]={0};
 	char key=0;
-	reset();
-    while(loop){
-    	if(n==1)vgmfile=good[loop];
-    	printf("playing: %s com%d\n",vgmfile,com_num);
-		printf("loop:%d\n",loop);
+	
+
+		char vgm_header[VGM_HEADER_LEN]={0};
+
+		printf("playing: %s \n",vgmfile);
+	
 	    printf("speed:%f\n",speed);
 	    FILE * vgm=fopen(vgmfile,"rb");
 		wait=0;
@@ -109,7 +99,8 @@ int main(int n,char ** argv)
 	    	printf("data offset:%02X\n",(vgm_header[0x34]&0xff)+0x34);
 	    	//printf("OPL2:%02X %02X %02X \n",vgm_header[0x50]&0xff,vgm_header[0x51]&0xff,vgm_header[0x52]&0xff);
 	    	printf("OPL2:%d Hz \n",ld_int(&vgm_header[0x50]));
-	    	if(ld_int(&vgm_header[0x50]))  OPL3off();
+	    	reset();
+	    	if(ld_int(&vgm_header[0x50])) OPL3off();
 	    	//printf("OPL3:%02X %02X %02X \n",vgm_header[0x5c],vgm_header[0x5d],vgm_header[0x5e]&0xff);
 	    	printf("OPL3:%d Hz \n",vgm_header[0x5c]+(vgm_header[0x5d]<<8)+((vgm_header[0x5e]&0xff)<<16));
 	    	fseek(vgm,(vgm_header[0x34]&0xff)+0x34,SEEK_SET);
@@ -183,8 +174,67 @@ int main(int n,char ** argv)
 	    	
 		}
 		fclose(vgm);
-		loop--;
 }
+int isVgmFile(const char fname[])
+{
+	int l = strlen(fname);
+	if (l <= 4 || stricmp(fname + l - 4, ".vgm") != 0)
+		return 0;
+	else
+		return l - 3;
+}
+
+	
+int main(int n,char ** argv)
+{
+	int com_num=4;
+    int loop=8;
+	const char * good[]={"jy.vgm","pal.vgm","doom.vgm","ultima.vgm","sandy.vgm","queen.vgm","axe.vgm","rain.vgm","zanac.vgm"};
+	char vgmfile[1024]="";
+	if (n>=2) strcpy(vgmfile,argv[1]); else printf("Example:%s %s com%d\n",argv[0],vgmfile,com_num);
+	if (n>=3) sscanf(argv[2],"com%d",&com_num);
+	if (n>=4) sscanf(argv[3],"%f",&speed);
+	
+	printf("open com%d \n",com_num);
+	while((COM1 = serial_init(com_num, 115200, 8, 1 , 0))==NULL   && com_num<12)  {
+		com_num++;
+	}
+    
+
+    while(loop){
+    	
+    //	if(n==1) strcpy(vgmfile,good[loop]);
+    	printf("loop:%d\n",loop);
+    	
+			    DIR *pdir;
+				struct dirent *pent;
+				
+				pdir=opendir("."); //"." refers to the current dir
+				if (!pdir){
+				printf ("opendir() failure; terminating");
+				exit(1);
+				}
+				errno=0;
+				if(strlen(vgmfile)>0) playFile(vgmfile);
+				else
+					while ((pent=readdir(pdir))){
+						
+						if(isVgmFile(pent->d_name)){
+							printf("find ... %s\n", pent->d_name);
+							playFile(pent->d_name);
+						}
+						
+					}
+				if (errno){
+				printf ("readdir() failure; terminating");
+				exit(1);
+				}
+				closedir(pdir);
+				
+
+    
+		loop--;
+   }
 reset();
     printf("OPL3 usb serial drive test. \n");
   
