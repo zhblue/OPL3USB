@@ -191,7 +191,7 @@ int main(int n,char ** argv)
     int loop=8;
 	const char * good[]={"jy.vgm","pal.vgm","doom.vgm","ultima.vgm","sandy.vgm","queen.vgm","axe.vgm","rain.vgm","zanac.vgm"};
 	char vgmfile[1024]="";
-	if (n>=2) strcpy(vgmfile,argv[1]); else printf("Example:%s %s com%d\n",argv[0],vgmfile,com_num);
+	if (n>=2) strcpy(vgmfile,argv[1]); else printf("Example:%s sandy.vgm com%d\n",argv[0],com_num);
 	if (n>=3) sscanf(argv[2],"com%d",&com_num);
 	if (n>=4) sscanf(argv[3],"%f",&speed);
 	
@@ -208,30 +208,35 @@ int main(int n,char ** argv)
     	
 			    DIR *pdir;
 				struct dirent *pent;
-				
-				pdir=opendir("."); //"." refers to the current dir
-				if (!pdir){
-				printf ("opendir() failure; terminating");
-				exit(1);
-				}
-				errno=0;
-				if(strlen(vgmfile)>0) playFile(vgmfile);
-				else
-					while ((pent=readdir(pdir))){
-						
-						if(isVgmFile(pent->d_name)){
-							printf("find ... %s\n", pent->d_name);
-							playFile(pent->d_name);
-						}
-						
+				if(strlen(vgmfile)>0 && isVgmFile(vgmfile)) playFile(vgmfile);
+				else{
+					if(strlen(vgmfile)==0){
+						pdir=opendir("."); //"." refers to the current dir
+					}else{
+						pdir=opendir(vgmfile); //opendir for playlist
 					}
-				if (errno){
-				printf ("readdir() failure; terminating");
-				exit(1);
-				}
-				closedir(pdir);
+					
+					if (!pdir){
+					printf ("opendir() failure; terminating");
+					exit(1);
+					}
+					errno=0;
 				
-
+						while ((pent=readdir(pdir))){
+							
+							if(isVgmFile(pent->d_name)){
+								printf("find ... %s\n", pent->d_name);
+								playFile(pent->d_name);
+							}
+							
+						}
+					if (errno){
+					printf ("readdir() failure; terminating");
+					exit(1);
+					}
+					closedir(pdir);
+				
+				}
     
 		loop--;
    }
@@ -240,4 +245,3 @@ reset();
   
     return 0;
 }
-
