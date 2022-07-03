@@ -102,7 +102,7 @@ void playFile(char * vgmfile){
 		gotoxy(1,6);
 		char vgm_header[VGM_HEADER_LEN]={0};
 
-		printf("playing: %s                                                         \n",vgmfile);
+		printf("playing: %s                       \n",vgmfile);
 	
 	    printf("speed:%f\n",speed);
 	    FILE * vgm=fopen(vgmfile,"rb");
@@ -111,20 +111,20 @@ void playFile(char * vgmfile){
 	    	fread(vgm_header,VGM_HEADER_LEN,1,vgm);
 	    	printf("data offset:%02X\n",(vgm_header[0x34]&0xff)+0x34);
 	    	//printf("OPL2:%02X %02X %02X \n",vgm_header[0x50]&0xff,vgm_header[0x51]&0xff,vgm_header[0x52]&0xff);
-	    	printf("OPL2:%d Hz \n",ld_int(&vgm_header[0x50]));
+	    	printf("OPL2:%d Hz                \n",ld_int(&vgm_header[0x50]));
 	    	reset();
 	    	if(ld_int(&vgm_header[0x50])) OPL3off();
 	    	//printf("OPL3:%02X %02X %02X \n",vgm_header[0x5c],vgm_header[0x5d],vgm_header[0x5e]&0xff);
-	    	printf("OPL3:%d Hz \n",vgm_header[0x5c]+(vgm_header[0x5d]<<8)+((vgm_header[0x5e]&0xff)<<16));
+	    	printf("OPL3:%d Hz                \n",vgm_header[0x5c]+(vgm_header[0x5d]<<8)+((vgm_header[0x5e]&0xff)<<16));
 	    	fseek(vgm,(vgm_header[0x34]&0xff)+0x34,SEEK_SET);
 	    	int count=0;
-	    	printf("UP/Down Arrow control speed ...\n");
+	    	printf("Up/Down : speed ... Esc: next ... Ctrl+C: Stop \n");
 	    	while(fread(op,3,1,vgm)==1){
 	    	if(_kbhit()){
 	    		key = getch();
 	    		if(key==KEY_UP) speed+=1;
 	    		if(key==KEY_DOWN) speed-=1;
-	    		if(key==ESC) wait=-1;
+	    		if(key==ESC) break;
 	    		key=0;
 	    		//delline();
 	    		
@@ -240,7 +240,7 @@ int main(int n,char ** argv)
 							
 							if(isVgmFile(pent->d_name)){
 								gotoxy(1,3);
-								printf("find ... %s                                                          \n", pent->d_name);
+								printf("find ... %s                           \n", pent->d_name);
 								char filepath[1024];
 								sprintf(filepath,"%s\\%s",vgmfile,pent->d_name);
 								playFile(filepath);
