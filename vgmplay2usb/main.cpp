@@ -5,8 +5,8 @@
 #include <conio.h> 
 #include <winuser.h>
 
-#define KEY_UP     72  //? 
-#define KEY_DOWN    80  //? 
+#define KEY_UP     72  
+#define KEY_DOWN    80 
 #define ESC       0x1B 
  
 #define VGM_HEADER_LEN (0x80)
@@ -98,7 +98,7 @@ void playFile(char * vgmfile){
     int wait=0;
     char op[3]={0};
 	char key=0;
-	
+	char started=0;
 		gotoxy(1,6);
 		char vgm_header[VGM_HEADER_LEN]={0};
 
@@ -119,6 +119,7 @@ void playFile(char * vgmfile){
 	    	fseek(vgm,(vgm_header[0x34]&0xff)+0x34,SEEK_SET);
 	    	int count=0;
 	    	printf("Up/Down : speed ... Esc: next ... Ctrl+C: Stop \n");
+	    	started=0;
 	    	while(fread(op,3,1,vgm)==1){
 	    	if(_kbhit()){
 	    		key = getch();
@@ -133,6 +134,7 @@ void playFile(char * vgmfile){
 	    		if(op[0]==0x5e || op[0]==0x5f || op[0]==0x5A ){
 	    		   OPL3write(op);
 	    		   count++;
+	    		   started=1;
 	    		   //if(count%44==0) Sleep(1);
 	    	//	if(op[2]&(0x01<<sleep))Sleep(10);
 	    		}else{
@@ -175,7 +177,7 @@ void playFile(char * vgmfile){
 	    		   		   	
 	    		   		default: wait=0; 
 				   }
-				   if (wait>=speed) {
+				   if (started && wait>=speed) {
 					   	//printf(" %d",wait/44);
 					   	Sleep(wait/speed);
 					   //	wait=wait % (int)speed;
