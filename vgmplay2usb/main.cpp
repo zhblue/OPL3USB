@@ -3,6 +3,8 @@
 #include <dirent.h>
 #include <windows.h>
 #include <conio.h> 
+#include <winuser.h>
+
 #define KEY_UP     72  //? 
 #define KEY_DOWN    80  //? 
 #define ESC       0x1B 
@@ -81,15 +83,26 @@ void reset()
 void nop(){
 	for(int i=0;i<1000;i++);
 }
+
+void locateCursor(const int row, const int col){
+    printf("%c[%d;%dH",27,row,col);
+}
+void   gotoxy(int   x,   int   y){   
+  COORD   c;   
+  c.X   =   x   -   1;   
+  c.Y   =   y   -   1;   
+  SetConsoleCursorPosition   (GetStdHandle(STD_OUTPUT_HANDLE),   c);   
+}   
+
 void playFile(char * vgmfile){
     int wait=0;
     char op[3]={0};
 	char key=0;
 	
-
+		gotoxy(1,6);
 		char vgm_header[VGM_HEADER_LEN]={0};
 
-		printf("playing: %s \n",vgmfile);
+		printf("playing: %s                                                         \n",vgmfile);
 	
 	    printf("speed:%f\n",speed);
 	    FILE * vgm=fopen(vgmfile,"rb");
@@ -114,7 +127,8 @@ void playFile(char * vgmfile){
 	    		if(key==ESC) wait=-1;
 	    		key=0;
 	    		//delline();
-	    		 printf("speed:%f\n",speed);
+	    		
+	    		 printf("\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b speed:%f",speed);
 			}	
 	    		if(op[0]==0x5e || op[0]==0x5f || op[0]==0x5A ){
 	    		   OPL3write(op);
@@ -204,29 +218,32 @@ int main(int n,char ** argv)
     while(loop){
     	
     //	if(n==1) strcpy(vgmfile,good[loop]);
-    	printf("loop:%d\n",loop);
+    	gotoxy(1,5);
+    		    printf("loop:%d\n",loop);
     	
 			    DIR *pdir;
 				struct dirent *pent;
 				if(strlen(vgmfile)>0 && isVgmFile(vgmfile)) playFile(vgmfile);
 				else{
 					if(strlen(vgmfile)==0){
-						pdir=opendir("."); //"." refers to the current dir
-					}else{
-						pdir=opendir(vgmfile); //opendir for playlist
+						strcpy(vgmfile,".");
 					}
-					
+					printf ("open %s ... \n",vgmfile);
+					pdir=opendir(vgmfile); //opendir for playlist
 					if (!pdir){
-					printf ("opendir() failure; terminating");
-					exit(1);
+						printf ("opendir() failure; terminating");
+						exit(1);
 					}
 					errno=0;
 				
 						while ((pent=readdir(pdir))){
 							
 							if(isVgmFile(pent->d_name)){
-								printf("find ... %s\n", pent->d_name);
-								playFile(pent->d_name);
+								gotoxy(1,3);
+								printf("find ... %s                                                          \n", pent->d_name);
+								char filepath[1024];
+								sprintf(filepath,"%s\\%s",vgmfile,pent->d_name);
+								playFile(filepath);
 							}
 							
 						}
