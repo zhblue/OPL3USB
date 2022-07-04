@@ -24,8 +24,16 @@ float speed = SAMPLE_RATE/900.0f;
 static thread * thPlay=NULL;
   
 
-int ld_int(char * p){
-   return (p[0]&0xff+(p[1]&0xff)*256)+((p[2]&0xff)*256*256);
+int le_int(char * p){
+   int ret=0;
+   int i=3;
+   for(i=3;i>0;i--){
+   	   ret+=p[i]&0xff;
+   	   ret<<=8;
+   }
+   ret+=p[i]&0xff;
+   
+   return ret;
 }
 
 void OPL3write(char * raw){
@@ -109,8 +117,13 @@ void playFile(char * vgmfile){
     char op[3]={0};
 	char key=0;
 	char started=0;
-		gotoxy(1,6);
-		char vgm_header[VGM_HEADER_LEN]={0};
+	int gd3offset=0;
+	char gd3info[4096];
+	int gd3len=0;
+	gotoxy(1,6);
+		
+	char vgm_header[VGM_HEADER_LEN]={0};
+	
 
 		printf("playing: %s                       \n",vgmfile);
 	
@@ -121,9 +134,33 @@ void playFile(char * vgmfile){
 	    	fread(vgm_header,VGM_HEADER_LEN,1,vgm);
 	    	printf("data offset:%02X\n",(vgm_header[0x34]&0xff)+0x34);
 	    	//printf("OPL2:%02X %02X %02X \n",vgm_header[0x50]&0xff,vgm_header[0x51]&0xff,vgm_header[0x52]&0xff);
-	    	printf("OPL2:%d Hz                \n",ld_int(&vgm_header[0x50]));
+	    	printf("OPL2:%d Hz                \n",le_int(&vgm_header[0x50]));
+	    	gd3offset=le_int(&vgm_header[0x14]);
+	    	if(gd3offset>0){	
+				fseek(vgm,gd3offset+0x14,SEEK_SET);
+	    		gd3len=fread(gd3info,1,4096,vgm);
+	    		int base=12;
+	    		int i=0;
+	    		for(i=0;base+i*2<gd3len;i++){
+					gd3info[i]=gd3info[base+i*2];
+					if(gd3info[i]==0){
+						gd3info[i]='\r';
+						gd3info[i+1]='\n';
+						i++;
+						if (gd3info[base+i*2+1]==0){
+							 base-=2;
+							 
+						}
+						   
+					} 
+					
+				}
+				gd3info[i]=0;
+	    		SetWindowText(hwndEditbox,gd3info);
+			}
+	    
 	    	reset();
-	    	if(ld_int(&vgm_header[0x50])) OPL3off();
+	    	if(le_int(&vgm_header[0x50])) OPL3off();
 	    	//printf("OPL3:%02X %02X %02X \n",vgm_header[0x5c],vgm_header[0x5d],vgm_header[0x5e]&0xff);
 	    	printf("OPL3:%d Hz                \n",vgm_header[0x5c]+(vgm_header[0x5d]<<8)+((vgm_header[0x5e]&0xff)<<16));
 	    	fseek(vgm,(vgm_header[0x34]&0xff)+0x34,SEEK_SET);
@@ -267,14 +304,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		return 0;
 	}
  
-	hwndDT=GetDesktopWindow(); //È¡×ÀÃæ¾ä±ú 
-	GetWindowRect(hwndDT,&rect); //È¡×ÀÃæ·¶Î§ 
-	dtWidth=rect.right-rect.left; //×ÀÃæ¿í¶È 
-	dtHeight=rect.bottom-rect.top; //×ÀÃæ¸ß¶È 
+	hwndDT=GetDesktopWindow(); //ÃˆÂ¡Ã—Ã€ÃƒÃ¦Â¾Ã¤Â±Ãº 
+	GetWindowRect(hwndDT,&rect); //ÃˆÂ¡Ã—Ã€ÃƒÃ¦Â·Â¶ÃŽÂ§ 
+	dtWidth=rect.right-rect.left; //Ã—Ã€ÃƒÃ¦Â¿Ã­Â¶Ãˆ 
+	dtHeight=rect.bottom-rect.top; //Ã—Ã€ÃƒÃ¦Â¸ÃŸÂ¶Ãˆ 
 	
 	hwnd = CreateWindowEx(WS_EX_CLIENTEDGE,wc.lpszClassName,
 		"OPL3USB VGM Player",WS_VISIBLE|WS_OVERLAPPEDWINDOW,
-		(dtWidth-240)/2,   /*´°Ìå¾ÓÖÐ*/ 
+		(dtWidth-240)/2,   /*Â´Â°ÃŒÃ¥Â¾Ã“Ã–Ã*/ 
 		(dtHeight-160)/2,
 		320,
 		160,
@@ -348,24 +385,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			hwndEditbox = CreateWindow( TEXT("edit"),NULL,
 										WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE,
                                    		cxChar * 1, cyChar * 0.5,
-                                   		35 * cxChar, 3.5 * cyChar,
+                                   		35 * cxChar, 5.5 * cyChar,
 										hwnd,(HMENU)IDeditBox,NULL,NULL);
 			hwndPlay = CreateWindow ( TEXT("button"), TEXT("Play"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 2, cyChar * 4,
-                                   		5 * cxChar, 2.5 * cyChar,
+                                   		cxChar * 2, cyChar * 6,
+                                   		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDPlayButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndNext = CreateWindow ( TEXT("button"), TEXT("Next"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 12, cyChar * 4,
-                                   		5 * cxChar, 2.5 * cyChar,
+                                   		cxChar * 12, cyChar * 6,
+                                   		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDNextButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndLoad = CreateWindow ( TEXT("button"), TEXT("Load"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 22, cyChar * 4,
-                                   		5 * cxChar, 2.5 * cyChar,
+                                   		cxChar * 22, cyChar * 6,
+                                   		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDLoadButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
-			if (!hwndPlay) MessageBox(NULL,"´´½¨°´Å¥Ê§°Ü","Message",MB_OK|MB_ICONERROR);
+			if (!hwndPlay) MessageBox(NULL,"Â´Â´Â½Â¨Â°Â´Ã…Â¥ÃŠÂ§Â°Ãœ","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndPlay,SW_SHOW);
             UpdateWindow(hwndPlay);
 			ShowWindow(hwndNext,SW_SHOW);
@@ -373,7 +410,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 				
             
 										
-			if (!hwndEditbox) MessageBox(NULL,"´´½¨ÎÄ±¾¿òÊ§°Ü","Message",MB_OK|MB_ICONERROR);
+			if (!hwndEditbox) MessageBox(NULL,"Â´Â´Â½Â¨ÃŽÃ„Â±Â¾Â¿Ã²ÃŠÂ§Â°Ãœ","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndEditbox,SW_SHOW);
             UpdateWindow(hwndEditbox);
             
@@ -388,7 +425,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			//GetClientRect (hwnd, &rect);
 			//rect.left += 20;
             //rect.top += 2;
-            //SetTextColor(hdc, RGB(255,0,0)); //¿ÉÒÔÓÃRGBÈýÔ­É«ÉèÖÃÎÄ±¾ÑÕÉ«
+            //SetTextColor(hdc, RGB(255,0,0)); //Â¿Ã‰Ã’Ã”Ã“ÃƒRGBÃˆÃ½Ã”Â­Ã‰Â«Ã‰Ã¨Ã–ÃƒÃŽÃ„Â±Â¾Ã‘Ã•Ã‰Â«
 			//DrawText(hdc, TEXT(" Hello, Dev-C++! "), -1, &rect, DT_SINGLELINE | DT_TOP | DT_LEFT);
 			EndPaint(hwnd, &ps);
 			return 0;
@@ -400,7 +437,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			return 0;
 			
 		case WM_COMMAND:
-			//¸÷¿Ø¼þµÄ_click()ÊÂ¼þ 
+			//Â¸Ã·Â¿Ã˜Â¼Ã¾ÂµÃ„_click()ÃŠÃ‚Â¼Ã¾ 
 			switch (LOWORD(wParam)) {
 			case 0:
 				PostQuitMessage(0);
@@ -429,25 +466,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 			return 0; 
  
-		case WM_LBUTTONDOWN: // WM_LBUTTONDOWNÊÇÊó±ê×ó¼ü°´ÏÂµÄÊÂ¼þ
+		case WM_LBUTTONDOWN: // WM_LBUTTONDOWNÃŠÃ‡ÃŠÃ³Â±ÃªÃ—Ã³Â¼Ã¼Â°Â´ÃÃ‚ÂµÃ„ÃŠÃ‚Â¼Ã¾
 			GetCursorPos(&mouse);
 			GetWindowRect(hwnd, &rect);
 			mX=mouse.x-rect.left;
 			mY=mouse.y-rect.top;
 			itoa(mX,x,10);
 			itoa(mY,y,10);
-			strXy="Êó±êµã»÷µÄ´°ÌåÄÚ×ø±ê£º("+string(x)+","+string(y)+")";
+			strXy="ÃŠÃ³Â±ÃªÂµÃ£Â»Ã·ÂµÃ„Â´Â°ÃŒÃ¥Ã„ÃšÃ—Ã¸Â±ÃªÂ£Âº("+string(x)+","+string(y)+")";
 			SetWindowText(hwndEditbox,strXy.c_str());
 			//MessageBox(NULL, strXy.c_str(), "", MB_ICONASTERISK);
 			return 0;
  
 		case WM_CLOSE:
-			if (IDYES==MessageBox(hwnd, "ÊÇ·ñÕæµÄÒªÍË³ö£¿", "È·ÈÏ", MB_ICONQUESTION | MB_YESNO))
-				DestroyWindow(hwnd);  //Ïú»Ù´°¿Ú
+			if (IDYES==MessageBox(hwnd, "ÃŠÃ‡Â·Ã±Ã•Ã¦ÂµÃ„Ã’ÂªÃÃ‹Â³Ã¶Â£Â¿", "ÃˆÂ·ÃˆÃ", MB_ICONQUESTION | MB_YESNO))
+				DestroyWindow(hwnd);  //ÃÃºÂ»Ã™Â´Â°Â¿Ãš
 			return 0;
 		  
 		case WM_DESTROY:
-			//ShellAbout(hwnd, "µÚÒ»¸ö´°¿Ú³ÌÐò", "ÔÙ¼û£¬ÆÚ´ýÄúÔÚÆÀÂÛÇøÁôÑÔ£¡", NULL);
+			//ShellAbout(hwnd, "ÂµÃšÃ’Â»Â¸Ã¶Â´Â°Â¿ÃšÂ³ÃŒÃÃ²", "Ã”Ã™Â¼Ã»Â£Â¬Ã†ÃšÂ´Ã½Ã„ÃºÃ”ÃšÃ†Ã€Ã‚Ã›Ã‡Ã¸ÃÃ´Ã‘Ã”Â£Â¡", NULL);
 			thPlay->join();
 			PostQuitMessage(0);
 			
