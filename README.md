@@ -27,7 +27,7 @@ Created using free version of LCEDA https://lceda.cn/
 
 [![Demo 1](https://img.youtube.com/vi/L81NinScREs/hqdefault.jpg)](https://www.youtube.com/watch?v=L81NinScREs)
 
-[![Demo 2](https://img.youtube.com/vi/RRTtd-lfNA/hqdefault.jpg)](https://www.youtube.com/watch?v=-RRTtd-lfNA)
+[![Demo 2](https://img.youtube.com/vi/-RRTtd-lfNA/hqdefault.jpg)](https://www.youtube.com/watch?v=-RRTtd-lfNA)
 
 [![Demo 3](https://img.youtube.com/vi/1FqVQKUkN9A/hqdefault.jpg)](https://www.youtube.com/watch?v=1FqVQKUkN9A)
 
