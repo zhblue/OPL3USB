@@ -25,9 +25,9 @@ Created using free version of LCEDA https://lceda.cn/
 ![QQ图片20220422195347](https://user-images.githubusercontent.com/3926566/164709568-8faaf54e-5c79-432d-aff7-edba869988d3.jpg)
 ![preview](https://user-images.githubusercontent.com/3926566/166856240-ecc5de7c-cee1-4c29-8d8e-71f6f70220e1.png)
 
-![DemoVideo](https://www.youtube.com/watch?v=L81NinScREs)
+![[Watch the video]](https://www.youtube.com/watch?v=L81NinScREs)
 
-![DemoVideo](https://www.youtube.com/watch?v=-RRTtd-lfNA)
+![[Watch the video]](https://www.youtube.com/watch?v=-RRTtd-lfNA)
 
-![DemoVideo](https://www.youtube.com/watch?v=1FqVQKUkN9A)
+![[Watch the video]](https://www.youtube.com/watch?v=1FqVQKUkN9A)
 
