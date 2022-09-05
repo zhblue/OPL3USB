@@ -19,6 +19,7 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
 #define VGM_HEADER_LEN (0x80)
 #define SAMPLE_RATE (44100)
+#define RGBVALUE(hex) ((hex & 0xff) << 16 | (hex & 0xff00) | hex >> 16)
 PORT COM1;
 float speed = SAMPLE_RATE/990.0f;
 static thread * thPlay=NULL;
@@ -36,7 +37,7 @@ int le_int(char * p){
    return ret;
 }
 
-void OPL3write(char * raw){
+void OPL3write(unsigned char * raw){
 	int show=0;
 	char nuke[3]={0};
  if (show)	printf("%02X %02X %02X =>",raw[0]&0xff,raw[1]&0xff,raw[2]&0xff);
@@ -64,7 +65,7 @@ void OPL3write(char * raw){
 void OPL3off()
 {
 
-     char reset[]={0x5f,0x05,0x00};
+     unsigned char reset[]={0x5f,0x05,0x00};
      OPL3write(reset);
      reset[0]=0x5e;
      reset[1]=0x01;
@@ -78,7 +79,7 @@ void OPL3off()
 void reset()
 {
 
-     char reset[]={0x5f,0x05,0x01};
+     unsigned char reset[]={0x5f,0x05,0x01};
      OPL3write(reset);
      reset[1]=0x04;
      reset[2]=0x00;
@@ -114,7 +115,7 @@ void   gotoxy(int   x,   int   y){
     int wait=0;
 void playFile(char * vgmfile){
 
-    char op[3]={0};
+    unsigned char op[3]={0};
 	char key=0;
 	char started=0;
 	int gd3offset=0;
@@ -150,7 +151,7 @@ void playFile(char * vgmfile){
 						gd3info[j++]='\n';
 						i+=2;
 						n++;
-						if (n==5) break;
+						if (n==7) break;
 						while(i<gd3len&&(gd3info[i]!=0||gd3info[i+1]!=0)) i+=2;
 					}else if (gd3info[i]>127){
 						gd3info[j++]=' ';
@@ -174,8 +175,8 @@ void playFile(char * vgmfile){
 	    	started=0;
 	    	while(fread(op,3,1,vgm)==1){
 	    	
-	    		if(op[0]==0x5e || op[0]==0x5f || op[0]==0x5A ){
-	    		   OPL3write(op);
+	    		if(op[0]==0x5e || op[0]==0x5f || op[0]==0x5A|| op[0]==0x5B ){    // OPL3,2,1e
+ 	    		   OPL3write(op);
 	    		   count++;
 	    		   started=1;
 	    		   //if(count%44==0) Sleep(1);
@@ -217,7 +218,10 @@ void playFile(char * vgmfile){
 	    		   			wait=1+(0xff&op[0]-0x70);
 	    		   			fseek(vgm,-2,SEEK_CUR);
 	    		   			break;
-	    		   		   	
+	    		   		case 0xD2:
+	    		   			wait++;
+	    		   			fseek(vgm,1,SEEK_CUR);
+	    		   			break;
 	    		   		default: wait=0; 
 				   }
 				   if (started && wait>=speed) {
@@ -232,6 +236,7 @@ void playFile(char * vgmfile){
 			}
 	    	fclose(vgm);
 	    	reset();
+	    	if(le_int(&vgm_header[0x50])) OPL3off();
 		}else{
 			SetWindowText(hwndEditbox, "Open failed!");
 								
@@ -290,14 +295,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	MSG msg;
 	RECT rect;
 	int dtWidth,dtHeight;
- 
+    HDC         	hdc;
 	memset(&wc,0,sizeof(wc));
 	wc.cbSize		 = sizeof(WNDCLASSEX);
 	wc.lpfnWndProc	 = WndProc;
 	wc.hInstance	 = hInstance;
 	wc.hCursor		 = LoadCursor(NULL, IDC_ARROW);
 	
-	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW+1);
+	wc.hbrBackground = (HBRUSH)(CreateSolidBrush(RGB(0xfc,0x55,0x31)));
 	wc.lpszClassName = "WindowClass";
 	wc.hIcon		 = LoadIcon(hInstance,IDI_APPLICATION);
 	wc.hIconSm		 = LoadIcon(NULL, IDI_APPLICATION);
@@ -311,20 +316,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		return 0;
 	}
  
-	hwndDT=GetDesktopWindow(); //ÃˆÂ¡Ã—Ã€ÃƒÃ¦Â¾Ã¤Â±Ãº 
-	GetWindowRect(hwndDT,&rect); //ÃˆÂ¡Ã—Ã€ÃƒÃ¦Â·Â¶ÃŽÂ§ 
-	dtWidth=rect.right-rect.left; //Ã—Ã€ÃƒÃ¦Â¿Ã­Â¶Ãˆ 
-	dtHeight=rect.bottom-rect.top; //Ã—Ã€ÃƒÃ¦Â¸ÃŸÂ¶Ãˆ 
+	hwndDT=GetDesktopWindow(); //È¡×ÀÃæ¾ä±ú 
+	GetWindowRect(hwndDT,&rect); //È¡×ÀÃæ·¶Î§ 
+	dtWidth=rect.right-rect.left; //×ÀÃæ¿í¶È 
+	dtHeight=rect.bottom-rect.top; //×ÀÃæ¸ß¶È 
 	
 	hwnd = CreateWindowEx(WS_EX_CLIENTEDGE,wc.lpszClassName,
 		"OPL3USB VGM Player",WS_VISIBLE|WS_OVERLAPPEDWINDOW,
-		(dtWidth-240)/2,   /*Â´Â°ÃŒÃ¥Â¾Ã“Ã–Ã*/ 
+		(dtWidth-240)/2,   /*´°Ìå¾ÓÖÐ*/ 
 		(dtHeight-160)/2,
 		315,
 		200,
 		NULL,NULL,hInstance,NULL);
 	//MoveWindow(hwnd, (width-640)/2, (height-480)/2, 640, 480, FALSE);
-    
+  			
 	if(hwnd == NULL) {
 		MessageBox(NULL, "Window Creation Failed!","Error!", MB_ICONEXCLAMATION|MB_OK);
 		return 0;
@@ -354,7 +359,7 @@ void load(){
 	
 	 BROWSEINFO bInfo={0};
 	 bInfo.hwndOwner=GetForegroundWindow();//???
-	 bInfo.lpszTitle=TEXT("?????```?????");
+	 bInfo.lpszTitle=TEXT("Ñ¡Ôñ°üº¬vgmÎÄ¼þµÄÄ¿Â¼");
 	 bInfo.ulFlags=BIF_RETURNONLYFSDIRS |BIF_USENEWUI|
 					BIF_UAHINT |BIF_NONEWFOLDERBUTTON ;
 					
@@ -393,10 +398,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	const int		IDPlayButton = 3;
 	const int		IDNextButton = 4;
 	const int		IDLoadButton = 5;
-  
+// ÉèÖÃ×ÖÌå²ÎÊý
+	LOGFONT LogFont;
+	::memset(&LogFont, 0, sizeof(LOGFONT));
+	lstrcpy(LogFont.lfFaceName, "ËÎÌå");
+	LogFont.lfWeight = 32;
+	LogFont.lfHeight = -14; // ×ÖÌå´óÐ¡
+	LogFont.lfCharSet = 134;
+	LogFont.lfOutPrecision = 3;
+	LogFont.lfClipPrecision = 2;
+	LogFont.lfOrientation = 45;
+	LogFont.lfQuality = 1;
+	LogFont.lfPitchAndFamily = 2;
+	
+	// ´´½¨×ÖÌå
+	HFONT hFont = CreateFontIndirect(&LogFont);
+	
     
 	cxChar = LOWORD(GetDialogBaseUnits());
 	cyChar = HIWORD(GetDialogBaseUnits());
+
+
     int height=8;
 	switch (message) {
 		case WM_CREATE:
@@ -420,15 +442,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                                    		cxChar * 22, cyChar * height,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDLoadButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
-			if (!hwndPlay) MessageBox(NULL,"Â´Â´Â½Â¨Â°Â´Ã…Â¥ÃŠÂ§Â°Ãœ","Message",MB_OK|MB_ICONERROR);
+			if (!hwndPlay) MessageBox(NULL,"´´½¨°´Å¥Ê§°Ü","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndPlay,SW_SHOW);
             UpdateWindow(hwndPlay);
 			ShowWindow(hwndNext,SW_SHOW);
             UpdateWindow(hwndNext);
-				
-            
+		          		
+			// È¡µÃ¿Ø¼þ¾ä±ú
+			//HWND hWndStatic = GetDlgItem(hDlg, IDC_STATIC_INFO);
+			
+			// ÉèÖÃ¿Ø¼þ×ÖÌå
+			::SendMessage(hwndEditbox, WM_SETFONT, (WPARAM)hFont, 0);
 										
-			if (!hwndEditbox) MessageBox(NULL,"Â´Â´Â½Â¨ÃŽÃ„Â±Â¾Â¿Ã²ÃŠÂ§Â°Ãœ","Message",MB_OK|MB_ICONERROR);
+			if (!hwndEditbox) MessageBox(NULL,"´´½¨ÎÄ±¾¿òÊ§°Ü","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndEditbox,SW_SHOW);
             UpdateWindow(hwndEditbox);
             
@@ -443,7 +469,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			//GetClientRect (hwnd, &rect);
 			//rect.left += 20;
             //rect.top += 2;
-            //SetTextColor(hdc, RGB(255,0,0)); //Â¿Ã‰Ã’Ã”Ã“ÃƒRGBÃˆÃ½Ã”Â­Ã‰Â«Ã‰Ã¨Ã–ÃƒÃŽÃ„Â±Â¾Ã‘Ã•Ã‰Â«
+            //SetBkColor(hdc, RGBVALUE(0x0101ff));
+            //SetTextColor(hdc, RGB(255,0,0)); //¿ÉÒÔÓÃRGBÈýÔ­É«ÉèÖÃÎÄ±¾ÑÕÉ«
 			//DrawText(hdc, TEXT(" Hello, Dev-C++! "), -1, &rect, DT_SINGLELINE | DT_TOP | DT_LEFT);
 			EndPaint(hwnd, &ps);
 			return 0;
@@ -455,7 +482,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			return 0;
 			
 		case WM_COMMAND:
-			//Â¸Ã·Â¿Ã˜Â¼Ã¾ÂµÃ„_click()ÃŠÃ‚Â¼Ã¾ 
+			//¸÷¿Ø¼þµÄ_click()ÊÂ¼þ 
 			switch (LOWORD(wParam)) {
 			case 0:
 				PostQuitMessage(0);
@@ -481,25 +508,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 			return 0; 
  
-		case WM_LBUTTONDOWN: // WM_LBUTTONDOWNÃŠÃ‡ÃŠÃ³Â±ÃªÃ—Ã³Â¼Ã¼Â°Â´ÃÃ‚ÂµÃ„ÃŠÃ‚Â¼Ã¾
+		case WM_LBUTTONDOWN: // WM_LBUTTONDOWNÊÇÊó±ê×ó¼ü°´ÏÂµÄÊÂ¼þ
 			GetCursorPos(&mouse);
 			GetWindowRect(hwnd, &rect);
 			mX=mouse.x-rect.left;
 			mY=mouse.y-rect.top;
 			itoa(mX,x,10);
 			itoa(mY,y,10);
-			strXy="ÃŠÃ³Â±ÃªÂµÃ£Â»Ã·ÂµÃ„Â´Â°ÃŒÃ¥Ã„ÃšÃ—Ã¸Â±ÃªÂ£Âº("+string(x)+","+string(y)+")";
+			strXy="Êó±êµã»÷µÄ´°ÌåÄÚ×ø±ê£º("+string(x)+","+string(y)+")";
+			speed=mX/3.0;
 			SetWindowText(hwndEditbox,strXy.c_str());
 			//MessageBox(NULL, strXy.c_str(), "", MB_ICONASTERISK);
 			return 0;
  
 		case WM_CLOSE:
-			if (IDYES==MessageBox(hwnd, "ÃŠÃ‡Â·Ã±Ã•Ã¦ÂµÃ„Ã’ÂªÃÃ‹Â³Ã¶Â£Â¿", "ÃˆÂ·ÃˆÃ", MB_ICONQUESTION | MB_YESNO))
-				DestroyWindow(hwnd);  //ÃÃºÂ»Ã™Â´Â°Â¿Ãš
+			if (IDYES==MessageBox(hwnd, "ÊÇ·ñÕæµÄÒªÍË³ö£¿", "È·ÈÏ", MB_ICONQUESTION | MB_YESNO))
+				DestroyWindow(hwnd);  //Ïú»Ù´°¿Ú
 			return 0;
 		  
 		case WM_DESTROY:
-			//ShellAbout(hwnd, "ÂµÃšÃ’Â»Â¸Ã¶Â´Â°Â¿ÃšÂ³ÃŒÃÃ²", "Ã”Ã™Â¼Ã»Â£Â¬Ã†ÃšÂ´Ã½Ã„ÃºÃ”ÃšÃ†Ã€Ã‚Ã›Ã‡Ã¸ÃÃ´Ã‘Ã”Â£Â¡", NULL);
+			//ShellAbout(hwnd, "µÚÒ»¸ö´°¿Ú³ÌÐò", "ÔÙ¼û£¬ÆÚ´ýÄúÔÚÆÀÂÛÇøÁôÑÔ£¡", NULL);
 			thPlay->join();
 			PostQuitMessage(0);
 			
