@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <windows.h>
 #include <mmsystem.h>
+#include <sysinfoapi.h>
 #include <conio.h> 
 #include <winuser.h>
 #define IDI_ICON1 101
@@ -97,7 +98,7 @@ void reset()
      //	Sleep(5);
 	 }
 	 
-	Sleep(800);
+	Sleep(10);
     OPL3off();
 }
 void nop(){
@@ -118,13 +119,13 @@ void   gotoxy(int   x,   int   y){
 void playFile(char * vgmfile){
 
     unsigned char op[3]={0};
-	char key=0;
+//	char key=0;
 	char started=0;
 	int gd3offset=0;
 	char gd3info[4096];
 	int gd3len=0;
 	gotoxy(1,6);
-		
+	DWORD tick,lasttick;	
 	char vgm_header[VGM_HEADER_LEN]={0};
 	UINT p=1;
     timeBeginPeriod(p);
@@ -175,6 +176,7 @@ void playFile(char * vgmfile){
 	    	int count=0;
 	    	printf("Up/Down : speed ... Esc: next ... Ctrl+C: Stop \n");
 	    	started=0;
+	    	int needwait=0;
 	    	while(fread(op,3,1,vgm)==1){
 	    	
 	    		if(op[0]==0x5e || op[0]==0x5f || op[0]==0x5A|| op[0]==0x5B ){    // OPL3,2,1e
@@ -226,15 +228,24 @@ void playFile(char * vgmfile){
 	    		   			break;
 	    		   		default: wait=0; 
 				   }
-				   if (started && wait>=speed) {
+				   needwait+=wait;
+				   wait=0;
+				  
+				   while (started && needwait>=speed) {
 					   	//printf(" %d",wait/44);
-					   	Sleep(wait/speed);
+					   	   	
+					   	lasttick=GetTickCount();
+					   	Sleep(1);
+					   	tick=GetTickCount();
+					   	needwait-=(tick-lasttick)*speed;
 					   	if(wait<0) break;
 					   	if(stop)break;
 					   	
-					    wait=wait % (int)speed;
+					    
 				   }
-				   	
+				   		if(wait<0) break;
+					   	if(stop)break;
+					   	
 				}
 	    	//	if(wait<0) break;
 				if(stop) break;   	
@@ -334,14 +345,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		return 0;
 	}
  
-	hwndDT=GetDesktopWindow(); //取桌面句柄 
-	GetWindowRect(hwndDT,&rect); //取桌面范围 
-	dtWidth=rect.right-rect.left; //桌面宽度 
-	dtHeight=rect.bottom-rect.top; //桌面高度 
+	hwndDT=GetDesktopWindow(); //????? 
+	GetWindowRect(hwndDT,&rect); //????? 
+	dtWidth=rect.right-rect.left; //???? 
+	dtHeight=rect.bottom-rect.top; //???? 
 	
 	hwnd = CreateWindowEx(WS_EX_CLIENTEDGE,wc.lpszClassName,
 		"OPL3USB VGM Player",WS_VISIBLE|WS_OVERLAPPEDWINDOW,
-		(dtWidth-240)/2,   /*窗体居中*/ 
+		(dtWidth-240)/2,   /*????*/ 
 		(dtHeight-160)/2,
 		315,
 		200,
@@ -364,7 +375,7 @@ void start(){
 		stop=1;
 		thPlay=NULL;
 	//	thPlay->join();
-		while(stop) Sleep(1000);
+		while(stop) Sleep(100);
 		
 		thPlay=new thread(play);
     	thPlay->detach();
@@ -379,7 +390,7 @@ void load(){
 	
 	 BROWSEINFO bInfo={0};
 	 bInfo.hwndOwner=GetForegroundWindow();//???
-	 bInfo.lpszTitle=TEXT("选择包含vgm文件的目录");
+	 bInfo.lpszTitle=TEXT("only support .vgm files");
 	 bInfo.ulFlags=BIF_RETURNONLYFSDIRS |BIF_USENEWUI|
 					BIF_UAHINT |BIF_NONEWFOLDERBUTTON ;
 					
@@ -418,12 +429,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	const int		IDPlayButton = 3;
 	const int		IDNextButton = 4;
 	const int		IDLoadButton = 5;
-// 设置字体参数
+// ??????
 	LOGFONT LogFont;
 	::memset(&LogFont, 0, sizeof(LOGFONT));
-	lstrcpy(LogFont.lfFaceName, "宋体");
+	lstrcpy(LogFont.lfFaceName, "??");
 	LogFont.lfWeight = 32;
-	LogFont.lfHeight = -14; // 字体大小
+	LogFont.lfHeight = -14; // ????
 	LogFont.lfCharSet = 134;
 	LogFont.lfOutPrecision = 3;
 	LogFont.lfClipPrecision = 2;
@@ -431,7 +442,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	LogFont.lfQuality = 1;
 	LogFont.lfPitchAndFamily = 2;
 	
-	// 创建字体
+	// ????
 	HFONT hFont = CreateFontIndirect(&LogFont);
 	
     
@@ -462,19 +473,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                                    		cxChar * 22, cyChar * height,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDLoadButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
-			if (!hwndPlay) MessageBox(NULL,"创建按钮失败","Message",MB_OK|MB_ICONERROR);
+			if (!hwndPlay) MessageBox(NULL,"??????","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndPlay,SW_SHOW);
             UpdateWindow(hwndPlay);
 			ShowWindow(hwndNext,SW_SHOW);
             UpdateWindow(hwndNext);
 		          		
-			// 取得控件句柄
+			// ??????
 			//HWND hWndStatic = GetDlgItem(hDlg, IDC_STATIC_INFO);
 			
-			// 设置控件字体
+			// ??????
 			::SendMessage(hwndEditbox, WM_SETFONT, (WPARAM)hFont, 0);
 										
-			if (!hwndEditbox) MessageBox(NULL,"创建文本框失败","Message",MB_OK|MB_ICONERROR);
+			if (!hwndEditbox) MessageBox(NULL,"???????","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndEditbox,SW_SHOW);
             UpdateWindow(hwndEditbox);
             
@@ -490,7 +501,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			//rect.left += 20;
             //rect.top += 2;
             //SetBkColor(hdc, RGBVALUE(0x0101ff));
-            //SetTextColor(hdc, RGB(255,0,0)); //可以用RGB三原色设置文本颜色
+            //SetTextColor(hdc, RGB(255,0,0)); //???RGB?????????
 			//DrawText(hdc, TEXT(" Hello, Dev-C++! "), -1, &rect, DT_SINGLELINE | DT_TOP | DT_LEFT);
 			EndPaint(hwnd, &ps);
 			return 0;
@@ -502,7 +513,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			return 0;
 			
 		case WM_COMMAND:
-			//各控件的_click()事件 
+			//????_click()?? 
 			switch (LOWORD(wParam)) {
 			case 0:
 				PostQuitMessage(0);
@@ -528,29 +539,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 			return 0; 
  
-		case WM_LBUTTONDOWN: // WM_LBUTTONDOWN是鼠标左键按下的事件
+		case WM_LBUTTONDOWN: // WM_LBUTTONDOWN??????????
 			GetCursorPos(&mouse);
 			GetWindowRect(hwnd, &rect);
 			mX=mouse.x-rect.left;
 			mY=mouse.y-rect.top;
 			itoa(mX,x,10);
 			itoa(mY,y,10);
-			strXy="鼠标点击的窗体内坐标：("+string(x)+","+string(y)+")";
-			speed=mX/3;
+			speed=mX/10;
 			//SetWindowText(hwndEditbox,strXy.c_str());
 			//MessageBox(NULL, strXy.c_str(), "", MB_ICONASTERISK);
 			return 0;
  
 		case WM_CLOSE:
-			if (IDYES==MessageBox(hwnd, "是否真的要退出？", "确认", MB_ICONQUESTION | MB_YESNO)){
+			if (IDYES==MessageBox(hwnd, "Quit", "Exit", MB_ICONQUESTION | MB_YESNO)){
 					stop=1;
-					DestroyWindow(hwnd);  //销毁窗口
+					DestroyWindow(hwnd);  //????
 			}
 			
 			return 0;
 		  
 		case WM_DESTROY:
-			//ShellAbout(hwnd, "第一个窗口程序", "再见，期待您在评论区留言！", NULL);
+			stop=1;
+			//ShellAbout(hwnd, "???????", "??,?????????!", NULL);
 			thPlay->join();
 			PostQuitMessage(0);
 			
