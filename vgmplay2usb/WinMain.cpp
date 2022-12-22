@@ -6,7 +6,6 @@
 #include <shlobj.h>
 #include "serial.h"
 #include <dirent.h>
-#include <windows.h>
 #include <mmsystem.h>
 #include <sysinfoapi.h>
 #include <conio.h> 
@@ -15,6 +14,7 @@
 #define KEY_UP     72  //? 
 #define KEY_DOWN    80  //? 
 #define ESC       0x1B 
+
 using namespace std;
 static HWND 	hwndEditbox; 
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -48,28 +48,18 @@ void OPL3write(unsigned char * raw){
 	nuke[0] = ((raw[0] << 2)&0x04) | 0x80 | ((raw[1] >> 6) & 0x03 ) & 0xff;      // high 1xxx xxxx for nuke protocol
 	nuke[1] = 0x7f & (( raw[1] << 1 )&0x7f) | ((raw[2] >> 7 ) & 0x01);
 	nuke[2] = 0x7f & raw[2];
-
-	
   if (show) printf("%02X %02X %02X =>",nuke[0]&0xff,nuke[1],nuke[2]);
 	Serial_SendData(COM1, nuke, 3);
-	char x1=0xff&nuke[0];
-	char x2=0xff&nuke[1];
-	char x3=0xff&nuke[2];
 	
-   //5E 75 FB =>81 7F 7B =>00 7F FB
-	
-    char bank = (x1>>2);
-	char reg = ((x1<<6)&0x0c0)|((x2>>1)&0x3f);
-	char data = ((x2<<7)&0x80)|(x3&0x7f);
-  if (show) printf("%02X %02X %02X \n",bank&0x03,reg&0xff,data&0xff);
-  
+	FlushFileBuffers(COM1);
+    //Sleep(1);
 }
 void OPL3off()
 {
 
-     unsigned char reset[]={0x5f,0x05,0x00};
+     unsigned char reset[]={0x5e,0x05,0x00};
      OPL3write(reset);
-     reset[0]=0x5e;
+     reset[0]=0x5f;
      reset[1]=0x01;
      OPL3write(reset);
      reset[1]=0x08;
@@ -92,13 +82,13 @@ void reset()
      	reset[1]=add;
      	reset[0]=0x5e;
      	OPL3write(reset);
-     //	Sleep(5);
+     	//Sleep(1);
      	reset[0]=0x5f;
      	OPL3write(reset);
-     //	Sleep(5);
+     	//Sleep(1);
 	 }
 	 
-	Sleep(10);
+	Sleep(100);
     OPL3off();
 }
 void nop(){
@@ -234,13 +224,12 @@ void playFile(char * vgmfile){
 				   while (started && needwait>=speed) {
 					   	//printf(" %d",wait/44);
 					   	   	
-					   	lasttick=GetTickCount();
+					   	lasttick=timeGetTime();
 					   	Sleep(1);
-					   	tick=GetTickCount();
+					   	tick=timeGetTime();
 					   	needwait-=(tick-lasttick)*speed;
 					   	if(wait<0) break;
 					   	if(stop)break;
-					   	
 					    
 				   }
 				   		if(wait<0) break;
@@ -258,7 +247,7 @@ void playFile(char * vgmfile){
 			SetWindowText(hwndEditbox, "Open failed!");
 								
 		}
-	
+	timeEndPeriod(p);
 }
 int isVgmFile(const char fname[])
 {
@@ -279,38 +268,40 @@ void play(){
 						strcpy(vgmfile,".");
 					}
 					SetWindowText(hwndEditbox,(vgmfile));
-					pdir=opendir(vgmfile); //opendir for playlist
-					if (!pdir){
-						printf ("opendir() failure; terminating");
-						exit(1);
-					}
-					errno=0;
-						wait=0;
-						while ((pent=readdir(pdir))){
-							
-							if(isVgmFile(pent->d_name)){
-								gotoxy(1,3);
-								SetWindowText(hwndEditbox, pent->d_name);
-								char filepath[1024];
-								sprintf(filepath,"%s\\%s",vgmfile,pent->d_name);
-								
-								OPL3off();
-								reset();
-								
-								playFile(filepath);
-							}
-							if(stop) break;
-							
+					while(!stop){
+						pdir=opendir(vgmfile); //opendir for playlist
+						if (!pdir){
+							printf ("opendir() failure; terminating");
+							exit(1);
 						}
-					if (errno){
-					printf ("readdir() failure; terminating");
-					exit(1);
+						errno=0;
+							wait=0;
+							while ((pent=readdir(pdir))){
+								
+								if(isVgmFile(pent->d_name)){
+									gotoxy(1,3);
+									SetWindowText(hwndEditbox, pent->d_name);
+									char filepath[1024];
+									sprintf(filepath,"%s\\%s",vgmfile,pent->d_name);
+									
+									OPL3off();
+									reset();
+									
+									playFile(filepath);
+								}
+								if(stop) break;
+								
+							}
+						if (errno){
+						printf ("readdir() failure; terminating");
+						exit(1);
+						}
+						closedir(pdir);
 					}
-					closedir(pdir);
-					
 				}
 				stop =0;
 } 
+int com_num=4;
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	WNDCLASSEX wc;
 	HWND hwnd, hwndDT;
@@ -328,7 +319,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	wc.lpszClassName = "WindowClass";
 	wc.hIcon		 = LoadIcon(hInstance,IDI_APPLICATION);
 	wc.hIconSm		 = LoadIcon(NULL, IDI_APPLICATION);
-	int com_num=4;
+	
 	const char * config="opl3usb.ini";
 	if (access(config, R_OK ) != -1){
 		FILE *conf=fopen(config,"r");
@@ -373,9 +364,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 void start(){
 	if(thPlay!=NULL ){
 		stop=1;
-		thPlay=NULL;
-	//	thPlay->join();
-		while(stop) Sleep(100);
+		thPlay->join();
+		for(int i=0;i<10&&stop;i++) Sleep(100);
+		stop=1;
 		
 		thPlay=new thread(play);
     	thPlay->detach();
@@ -554,6 +545,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		case WM_CLOSE:
 			if (IDYES==MessageBox(hwnd, "Quit", "Exit", MB_ICONQUESTION | MB_YESNO)){
 					stop=1;
+				//	reset();
+				//	ClosePort(COM1);
+				
 					DestroyWindow(hwnd);  //????
 			}
 			
@@ -570,3 +564,4 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	
 	return DefWindowProc(hwnd, message, wParam, lParam);
 }
+
