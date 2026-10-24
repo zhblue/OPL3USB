@@ -30,7 +30,9 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 #define SAMPLE_RATE (44100)
 #define RGBVALUE(hex) ((hex & 0xff) << 16 | (hex & 0xff00) | hex >> 16)
 PORT COM1;
-float speed = SAMPLE_RATE/930.0f;
+#define VGM_SAMPLE_RATE    44100.0                    // VGM sample rate (Hz)
+#define VGM_SPEED_DEFAULT  (VGM_SAMPLE_RATE/1000.0)   // samples per millisecond
+float speed = (float)VGM_SPEED_DEFAULT;
 static thread * thPlay=NULL;
   
 
@@ -57,9 +59,9 @@ void OPL3write(unsigned char * raw){
 	nuke[2] = 0x7f & raw[2];
   if (show) printf("%02X %02X %02X =>",nuke[0]&0xff,nuke[1],nuke[2]);
 	Serial_SendData(COM1, nuke, 3);
-	
-	FlushFileBuffers(COM1);
-    //Sleep(1);
+	// no flush per packet: waiting for the port to drain after every
+	// 3 byte packet costs ~260 us and was the biggest source of jitter.
+	// The data is flushed before the player goes to sleep instead.
 }
 void OPL3off()
 {
@@ -113,6 +115,58 @@ void   gotoxy(int   x,   int   y){
 }   
     int wait=0;
     int stop=0;
+    int debuglog=0;   // write opl3usb.log when enabled in the ini
+static HANDLE        hrTimer     = NULL;
+static LARGE_INTEGER qpcFreq;
+static int           timingReady = 0;
+
+static void timing_init(void){
+	if(timingReady) return;
+	timingReady=1;
+	QueryPerformanceFrequency(&qpcFreq);
+	// high resolution timer (Windows 10 1803+), plain timer as a fallback
+	hrTimer=CreateWaitableTimerExW(NULL,NULL,CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,TIMER_ALL_ACCESS);
+	if(hrTimer==NULL) hrTimer=CreateWaitableTimerExW(NULL,NULL,0,TIMER_ALL_ACCESS);
+	timeBeginPeriod(1);                    // 1 ms timer resolution for Sleep()
+}
+
+static void timing_exit(void){
+	if(hrTimer){ CloseHandle(hrTimer); hrTimer=NULL; }
+	timeEndPeriod(1);
+	timingReady=0;
+}
+
+// microseconds, high resolution
+static inline double now_us(void){
+	LARGE_INTEGER c;
+	QueryPerformanceCounter(&c);
+	return (double)c.QuadPart*1000000.0/(double)qpcFreq.QuadPart;
+}
+
+// sleep until the absolute deadline (same unit as now_us), aborts on stop
+static void wait_until_us(double deadline_us){
+	for(;;){
+		if(stop) return;
+		double remain=deadline_us-now_us();
+		if(remain<=0) return;
+		if(remain>250.0 && hrTimer){
+			// wake up ~120 us before the deadline, then spin the rest
+			double slice=remain-120.0;
+			if(slice>50000.0) slice=50000.0;      // keep the stop flag responsive
+			LARGE_INTEGER due;
+			due.QuadPart=-(LONGLONG)(slice*1000.0); // -100 ns units
+			if(SetWaitableTimerEx(hrTimer,&due,0,NULL,NULL,NULL,0)){
+				WaitForSingleObject(hrTimer,(DWORD)(slice/1000.0)+20);
+				continue;
+			}
+			hrTimer=NULL;
+		}
+		if(remain>1200.0){ Sleep(1); continue; }
+		while(now_us()<deadline_us){ YieldProcessor(); }   // last milliseconds
+		return;
+	}
+}
+
 void playFile(char * vgmfile){
 
     unsigned char op[3]={0};
@@ -124,8 +178,7 @@ void playFile(char * vgmfile){
 	gotoxy(1,6);
 	DWORD tick,lasttick;	
 	char vgm_header[VGM_HEADER_LEN]={0};
-	UINT p=1;
-    timeBeginPeriod(p);
+	// timer resolution is managed by timing_init()/timing_exit()
 		printf("playing: %s                       \n",vgmfile);
 	
 	    printf("speed:%f\n",speed);
@@ -173,8 +226,16 @@ void playFile(char * vgmfile){
 	    	int count=0;
 	    	printf("Up/Down : speed ... Esc: next ... Ctrl+C: Stop \n");
 	    	started=0;
-	    	int needwait=0;
-	    	while(fread(op,3,1,vgm)==1){
+	    	// --- precise timeline -------------------------------------------
+	    	// A VGM sample is 1/44100 s, so the position inside the file is
+	    	// simply the number of samples that have been sent.  The deadline
+	    	// of the next event is calculated from that counter, therefore the
+	    	// timing never drifts, no matter how long the file is.
+	    	long long samples=0;
+	    	double   t0=now_us();
+	    	double   rate=(double)speed*1000.0;      // samples per second
+	    	int      endofdata=0;
+	    	while(fread(op,3,1,vgm)==1 && !endofdata){
 	    	
 	    		if(op[0]==0x5e || op[0]==0x5f || op[0]==0x5A|| op[0]==0x5B ){    // OPL3,2,1e
  	    		   OPL3write(op);
@@ -197,8 +258,8 @@ void playFile(char * vgmfile){
 	    		   			wait=882;
 	    		   		    fseek(vgm,-2,SEEK_CUR);
 	    		   			break;
-	    		   		case 0x66:
-						    wait=-1;
+	    		   		case 0x66:                     // end of sound data
+						    endofdata=1;
 						    break;
 						case 0x70:
 						case 0x71:
@@ -225,28 +286,29 @@ void playFile(char * vgmfile){
 	    		   			break;
 	    		   		default: wait=0; 
 				   }
-				   needwait+=wait;
-				   wait=0;
-				  
-				   while (started && needwait>=speed) {
-					   	//printf(" %d",wait/44);
-					   	   	
-					   	lasttick=timeGetTime();
-					   	Sleep(1);
-					   	tick=timeGetTime();
-					   	needwait-=(tick-lasttick)*speed;
-					   	if(wait<0) break;
-					   	if(stop)break;
-					    
+				   				   if(endofdata) break;
+				   if(wait>0){
+				   	samples+=wait;
+				   	FlushFileBuffers(COM1);          // the chip gets it now
+				   	wait_until_us(t0+(double)samples*1000000.0/rate);
 				   }
-				   		if(wait<0) break;
-					   	if(stop)break;
-					   	
+				   wait=0;
+				   if(stop) break;
 				}
-	    	//	if(wait<0) break;
+				//	if(wait<0) break;
 				if(stop) break;   	
 			}
 													
+	    	if(debuglog){
+	    		double elapsed=(now_us()-t0)/1000000.0;
+	    		double expected=(double)samples/rate;
+	    		FILE *log=fopen("opl3usb.log","a");
+	    		if(log){
+	    			fprintf(log,"%s\tsamples=%lld\texpected=%.3fs\tactual=%.3fs\terror=%+.3f%%\n",
+	    				vgmfile,samples,expected,elapsed,expected>0.0?(elapsed-expected)*100.0/expected:0.0);
+	    			fclose(log);
+	    		}
+	    	}
 	    	fclose(vgm);
 	    	reset();
 	    	OPL3off();
@@ -254,7 +316,6 @@ void playFile(char * vgmfile){
 			SetWindowText(hwndEditbox, "Open failed!");
 								
 		}
-	timeEndPeriod(p);
 }
 int isVgmFile(const char fname[])
 {
@@ -338,8 +399,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		fscanf(conf,"COM=%d\n",&com_num);
 		fscanf(conf,"speed=%f\n",&speed);
 		fscanf(conf,"autoplay=%d\n",&autoplay);
+		fscanf(conf,"debug=%d\n",&debuglog);
 		fclose(conf);
 	}
+    timing_init();
     printf("open com%d \n",com_num);
 	while((COM1 = serial_init(com_num, 115200, 8, 1 , 0))==NULL   && com_num<12)  {
 		com_num++;
@@ -376,6 +439,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		DispatchMessage(&msg);
 	}
  
+	timing_exit();
 	return msg.wParam;
 }
 void start(){
