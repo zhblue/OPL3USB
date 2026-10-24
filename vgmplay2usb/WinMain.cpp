@@ -19,6 +19,13 @@ using namespace std;
 static HWND 	hwndEditbox; 
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
+// control ids of the child windows (also used to start the player)
+#define IDcmdButton    1
+#define IDeditBox      2
+#define IDPlayButton   3
+#define IDNextButton   4
+#define IDLoadButton   5
+
 #define VGM_HEADER_LEN (0x80)
 #define SAMPLE_RATE (44100)
 #define RGBVALUE(hex) ((hex & 0xff) << 16 | (hex & 0xff00) | hex >> 16)
@@ -260,7 +267,7 @@ int isVgmFile(const char fname[])
 
 char vgmfile[1024]=".";	
 void play(){
-	   DIR *pdir;
+			DIR *pdir;
 				struct dirent *pent;
 				if(strlen(vgmfile)>0 && isVgmFile(vgmfile)) playFile(vgmfile);
 				else{
@@ -276,9 +283,11 @@ void play(){
 						}
 						errno=0;
 							wait=0;
+							int played=0;
 							while ((pent=readdir(pdir))){
 								
 								if(isVgmFile(pent->d_name)){
+									played++;
 									gotoxy(1,3);
 									SetWindowText(hwndEditbox, pent->d_name);
 									char filepath[1024];
@@ -293,15 +302,17 @@ void play(){
 								
 							}
 						if (errno){
-						printf ("readdir() failure; terminating");
-						exit(1);
+							printf ("readdir() failure; terminating");
+							exit(1);
 						}
 						closedir(pdir);
+						if(played==0) Sleep(200);   // no .vgm files here, do not spin
 					}
 				}
 				stop =0;
 } 
-int com_num=4;
+
+int com_num=3;
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	WNDCLASSEX wc;
 	HWND hwnd, hwndDT;
@@ -320,11 +331,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	wc.hIcon		 = LoadIcon(hInstance,IDI_APPLICATION);
 	wc.hIconSm		 = LoadIcon(NULL, IDI_APPLICATION);
 	
+	int autoplay=1;
 	const char * config="opl3usb.ini";
 	if (access(config, R_OK ) != -1){
 		FILE *conf=fopen(config,"r");
 		fscanf(conf,"COM=%d\n",&com_num);
 		fscanf(conf,"speed=%f\n",&speed);
+		fscanf(conf,"autoplay=%d\n",&autoplay);
 		fclose(conf);
 	}
     printf("open com%d \n",com_num);
@@ -353,6 +366,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	if(hwnd == NULL) {
 		MessageBox(NULL, "Window Creation Failed!","Error!", MB_ICONEXCLAMATION|MB_OK);
 		return 0;
+	}
+	// play the .vgm files of the current directory right away
+	if(autoplay){
+		PostMessage(hwnd, WM_COMMAND, (WPARAM)IDPlayButton, 0);
 	}
 	while(GetMessage(&msg, NULL, 0, 0) > 0) { 
 		TranslateMessage(&msg);
@@ -415,11 +432,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	string			strXy;
 	char			x[5], y[5];
 	char			buff[4096] = {0};
-	const int		IDcmdButton = 1;
-	const int		IDeditBox = 2;
-	const int		IDPlayButton = 3;
-	const int		IDNextButton = 4;
-	const int		IDLoadButton = 5;
 // ??????
 	LOGFONT LogFont;
 	::memset(&LogFont, 0, sizeof(LOGFONT));
@@ -556,7 +568,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 		case WM_DESTROY:
 			stop=1;
 			//ShellAbout(hwnd, "???????", "??,?????????!", NULL);
-			thPlay->join();
+			if(thPlay!=NULL && thPlay->joinable()) thPlay->join();
 			PostQuitMessage(0);
 			
 			return 0;
