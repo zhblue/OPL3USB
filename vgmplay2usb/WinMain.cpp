@@ -15,6 +15,9 @@
 #include <sysinfoapi.h>
 #include <conio.h> 
 #include <winuser.h>
+#include "opl_emu.h"
+#include "audio_out.h"
+#include <atomic>
 #define IDI_ICON1 101
 #define KEY_UP     72  //? 
 #define KEY_DOWN    80  //? 
@@ -22,6 +25,7 @@
 
 using namespace std;
 static HWND 	hwndEditbox; 
+static bool     g_useEmu = false;   // no serial port: local OPL3 emulator
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 #define WM_APP_SET_EDIT_TEXT (WM_APP + 1)
 
@@ -55,6 +59,12 @@ static void showPlaybackInfo(const char *file, const char *chips, const char *gd
         if (used < sizeof(text) - 1)
             snprintf(text + used, sizeof(text) - used, "\r\n\r\n%s", gd3);
     }
+    if (g_useEmu) {
+        size_t used = strlen(text);
+        if (used < sizeof(text) - 1)
+            snprintf(text + used, sizeof(text) - used,
+                     "\r\nOutput: OPL3 emulator -> Windows audio");
+    }
     postEditText(text);
 }
 
@@ -69,8 +79,14 @@ static void showPlaybackInfo(const char *file, const char *chips, const char *gd
 
 #define VGM_HEADER_LEN (0x80)
 #define SAMPLE_RATE (44100)
+#define EMU_RATE (48000)
 #define RGBVALUE(hex) ((hex & 0xff) << 16 | (hex & 0xff00) | hex >> 16)
 PORT COM1;
+
+static Opl3Emu  g_emu;
+static AudioOut g_audio;
+static ADL_MIDIPlayer *g_midiDev = NULL;      // called by the audio thread only
+static std::atomic<bool> g_midiDone(false);
 
 // libADLMIDI writes to the COM port handle this application already owns
 // (see the "@host" support in its ChipSerialPort); opening COM3 a second
@@ -131,12 +147,17 @@ int le_int(char * p){
 void OPL3write(unsigned char * raw){
 	int show=0;
 	char nuke[3]={0};
- if (show)	printf("%02X %02X %02X =>",raw[0]&0xff,raw[1]&0xff,raw[2]&0xff);
-    if (raw[0]>0x50) raw [0] = raw[0] & 0x01; 
-    else raw[0]=0;
-	nuke[0] = ((raw[0] << 2)&0x04) | 0x80 | ((raw[1] >> 6) & 0x03 ) & 0xff;      // high 1xxx xxxx for nuke protocol
-	nuke[1] = 0x7f & (( raw[1] << 1 )&0x7f) | ((raw[2] >> 7 ) & 0x01);
-	nuke[2] = 0x7f & raw[2];
+ unsigned char bank = (raw[0] > 0x50) ? (raw[0] & 0x01) : 0;
+ unsigned char reg  = raw[1];
+ unsigned char data = raw[2];
+ if (show)	printf("%02X %02X %02X =>",bank&0xff,reg&0xff,data&0xff);
+    if (g_useEmu) {
+        g_emu.write(((unsigned)bank << 8) | reg, data);
+        return;
+    }
+	nuke[0] = ((bank << 2)&0x04) | 0x80 | ((reg >> 6) & 0x03 ) & 0xff;      // high 1xxx xxxx for nuke protocol
+	nuke[1] = 0x7f & (( reg << 1 )&0x7f) | ((data >> 7 ) & 0x01);
+	nuke[2] = 0x7f & data;
   if (show) printf("%02X %02X %02X =>",nuke[0]&0xff,nuke[1],nuke[2]);
 	Serial_SendData(COM1, nuke, 3);
 	// no flush per packet: waiting for the port to drain after every
@@ -196,6 +217,36 @@ void   gotoxy(int   x,   int   y){
     int wait=0;
     int stop=0;
     volatile int skipfile=0;   // set by the Next button, skips the current file
+
+// Audio-thread callbacks.  emuFill renders the local Nuked OPL3 that receives
+// the VGM register stream; midiFill pulls PCM straight out of libADLMIDI, so
+// the sound card clock also paces the MIDI sequencer.
+static bool emuFill(short *buf, int frames)
+{
+    g_emu.render(buf, frames);
+    return true;
+}
+
+static bool midiFill(short *buf, int frames)
+{
+    if (!g_midiDev)
+        return false;
+    if (stop || skipfile) {
+        g_midiDone = true;
+        return false;
+    }
+    int got = adl_play(g_midiDev, frames * 2, buf);
+    if (got <= 0) {
+        g_midiDone = true;
+        return false;
+    }
+    if (got < frames * 2)
+        memset(buf + got, 0, (size_t)(frames * 2 - got) * sizeof(short));
+    if (adl_atEnd(g_midiDev))
+        g_midiDone = true;
+    return got == frames * 2;
+}
+
 static HANDLE        hrTimer     = NULL;
 static LARGE_INTEGER qpcFreq;
 static int           timingReady = 0;
@@ -416,7 +467,7 @@ void playFile(char * vgmfile){
 				   				   if(endofdata) break;
 				   if(wait>0){
 				   	samples+=wait;
-				   	FlushFileBuffers(COM1);          // the chip gets it now
+				   	if(COM1) FlushFileBuffers(COM1);          // the chip gets it now
 				   	wait_until_us(t0+(double)samples*1000000.0/rate);
 				   }
 				   wait=0;
@@ -461,14 +512,16 @@ void playMidiFile(const char *midfile)
 	const char *bankName=(bankList && midiBank>=0 && midiBank<adl_getBanksCount())
 	                     ? bankList[midiBank] : NULL;
 	ADL_MIDIPlayer *dev=NULL;
+	// No serial link: let libADLMIDI render into the waveOut stream instead.
+	bool emu=g_useEmu;
 
-	if(!COM1){
+	if(!emu && !COM1){
 		postEditText("Serial port is not open!");
 		return;
 	}
 	if(bankName) utf8ToAnsi(bankName,bankNameAnsi,sizeof(bankNameAnsi));
 
-	dev=adl_init(SAMPLE_RATE);
+	dev=adl_init(emu?EMU_RATE:SAMPLE_RATE);
 	if(!dev){
 		snprintf(text,sizeof(text),"MIDI init failed: %s",
 		         adl_errorInfo(NULL)?adl_errorInfo(NULL):"unknown error");
@@ -478,7 +531,9 @@ void playMidiFile(const char *midfile)
 
 	adl_setNumChips(dev,1);
 	adl_setLoopEnabled(dev,0);
-	if(adl_switchSerialHW(dev,"@host",115200,ADLMIDI_SerialProtocol_NukeYktOPL3)<0){
+	if(emu){
+		adl_switchEmulator(dev,ADLMIDI_EMU_DOSBOX);
+	}else if(adl_switchSerialHW(dev,"@host",115200,ADLMIDI_SerialProtocol_NukeYktOPL3)<0){
 		snprintf(text,sizeof(text),"MIDI hardware mode failed: %s",
 		         adl_errorInfo(dev)?adl_errorInfo(dev):"unknown error");
 		postEditText(text);
@@ -510,53 +565,69 @@ void playMidiFile(const char *midfile)
 		if(used<sizeof(info)-1)
 			snprintf(info+used,sizeof(info)-used,"\r\nTitle: %s",titleAnsi);
 	}
-	showPlaybackInfo(midfile,"MIDI -> YMF262",info);
-	printf("playing midi: %s (bank %d)\n",midfile,midiBank);
+	showPlaybackInfo(midfile,emu?"MIDI -> OPL3 emulator":"MIDI -> YMF262",info);
+	printf("playing midi: %s (bank %d, %s)\n",midfile,midiBank,emu?"emulator":"serial");
 
-	adl_host_serial_bytes=0;
-	OPL3off();
-	const double min_delay=0.020;      // service the sequencer at least every 20 ms
-	const double granularity=0.002;    // <= 1 ms of event timing error
 	double t0=now_us();
-	double last=t0;
-	double last_flush=t0;
-	double advance=1e-9;               // first call only processes events at time 0
-	double tick_delay=0.0;
+	if(emu){
+		// The sound card clocks the score: every refilled waveOut buffer asks
+		// adl_play() for exactly that many frames, so no extra pacing loop.
+		g_midiDone=false;
+		g_midiDev=dev;
+		g_emu.reset();                 // drop whatever the previous VGM left behind
+		g_audio.setFill(midiFill);
+		while(!stop && !skipfile && !g_midiDone) Sleep(10);
+		// Wait for a fill that may still be inside adl_play(), then detach the
+		// sequencer before adl_panic()/adl_close() touch it.
+		g_audio.setFill(emuFill);
+		g_midiDev=NULL;
+		g_emu.reset();
+		adl_panic(dev);
+	}else{
+		adl_host_serial_bytes=0;
+		OPL3off();
+		const double min_delay=0.020;      // service the sequencer at least every 20 ms
+		const double granularity=0.002;    // <= 1 ms of event timing error
+		double last=t0;
+		double last_flush=t0;
+		double advance=1e-9;               // first call only processes events at time 0
+		double tick_delay=0.0;
 
-	while(!stop && !skipfile){
-		tick_delay=adl_tickEvents(dev,advance,granularity);
-		double now=now_us();
+		while(!stop && !skipfile){
+			tick_delay=adl_tickEvents(dev,advance,granularity);
+			double now=now_us();
 
-		// The write buffer is not drained per packet; flushing a few times
-		// per second bounds the backlog without stalling on every event.
-		if(now-last_flush>250000.0){
-			FlushFileBuffers(COM1);
-			now=now_us();
-			last_flush=now;
+			// The write buffer is not drained per packet; flushing a few times
+			// per second bounds the backlog without stalling on every event.
+			if(now-last_flush>250000.0){
+				FlushFileBuffers(COM1);
+				now=now_us();
+				last_flush=now;
+			}
+			if(tick_delay<0.0) break;      // sequencer error
+
+			double next=tick_delay<min_delay?tick_delay:min_delay;
+			if(next>0.0) wait_until_us(now+next*1000000.0);
+
+			double after=now_us();
+			advance=(after-last)/1000000.0;
+			if(advance>0.25) advance=0.25; // after a stall: catch up, don't skip
+			last=after;
+			if(adl_atEnd(dev) && tick_delay<=0.0) break;
 		}
-		if(tick_delay<0.0) break;      // sequencer error
 
-		double next=tick_delay<min_delay?tick_delay:min_delay;
-		if(next>0.0) wait_until_us(now+next*1000000.0);
-
-		double after=now_us();
-		advance=(after-last)/1000000.0;
-		if(advance>0.25) advance=0.25; // after a stall: catch up, don't skip
-		last=after;
-		if(adl_atEnd(dev) && tick_delay<=0.0) break;
+		adl_panic(dev);
+		FlushFileBuffers(COM1);
+		OPL3off();
 	}
-
-	adl_panic(dev);
-	FlushFileBuffers(COM1);
-	OPL3off();
 
 	if(debuglog){
 		double actual=(now_us()-t0)/1000000.0;
 		double played=adl_positionTell(dev);
 		FILE *log=fopen("opl3usb.log","a");
 		if(log){
-			fprintf(log,"%s\tmidi\tbank=%s\tlength=%.3fs\tplayed=%.3fs\tactual=%.3fs\terror=%+.3f%%\tbytes=%lu\n",
-			        midfile,bankNameAnsi,length,played,actual,
+			fprintf(log,"%s\tmidi\tbank=%s\tout=%s\tlength=%.3fs\tplayed=%.3fs\tactual=%.3fs\terror=%+.3f%%\tbytes=%lu\n",
+			        midfile,bankNameAnsi,emu?"emu":"serial",length,played,actual,
 			        length>0.0?(actual-length)*100.0/length:0.0,adl_host_serial_bytes);
 			fclose(log);
 		}
@@ -682,6 +753,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 	if(COM1) com_num=probePort;   // remember the port that actually opened
 	adl_host_serial_handle=COM1;
+	if(!COM1){
+		// No YMF262 on a serial line: play through the built-in OPL3
+		// emulator and the default Windows audio device instead.
+		printf("no serial port, falling back to the OPL3 emulator\n");
+		if(g_audio.start(EMU_RATE) && g_emu.init(EMU_RATE)){
+			g_useEmu=true;
+			g_audio.setFill(emuFill);
+		}else{
+			printf("audio fallback unavailable\n");
+			g_audio.stop();
+		}
+	}
 	if(!RegisterClassEx(&wc)) {
 		MessageBox(NULL, "Window Registration Failed!","Error!",MB_ICONEXCLAMATION|MB_OK);
 		return 0;
@@ -705,6 +788,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		MessageBox(NULL, "Window Creation Failed!","Error!", MB_ICONEXCLAMATION|MB_OK);
 		return 0;
 	}
+	if(g_useEmu)
+		postEditText("No serial port - OPL3 emulator -> Windows audio");
 	// play the supported files of the current directory right away
 	if(autoplay){
 		PostMessage(hwnd, WM_COMMAND, (WPARAM)IDPlayButton, 0);
