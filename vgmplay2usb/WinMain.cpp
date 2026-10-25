@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <commdlg.h>
 #include "serial.h"
 #include "vgmsrc.h"
@@ -18,6 +19,7 @@
 #include "opl_emu.h"
 #include "audio_out.h"
 #include <atomic>
+#include <vector>
 #define IDI_ICON1 101
 #define KEY_UP     72  //? 
 #define KEY_DOWN    80  //? 
@@ -34,12 +36,18 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 // deadlock when the UI thread is joining the worker (for example on Play).
 static void postEditText(const char *text)
 {
+    FILE *lg=fopen("dropdebug.log","a");
+    if(lg){ fprintf(lg,"postEditText edit=%p parent=%p text=[%.160s]\n",
+                    (void*)hwndEditbox,
+                    (void*)(hwndEditbox?GetParent(hwndEditbox):NULL),text); fclose(lg); }
     size_t size = strlen(text) + 1;
     char *copy = (char *)malloc(size);
     if (!copy) return;
     memcpy(copy, text, size);
-    if (!PostMessage(GetParent(hwndEditbox), WM_APP_SET_EDIT_TEXT, 0, (LPARAM)copy))
-        free(copy);
+    BOOL ok=PostMessage(GetParent(hwndEditbox), WM_APP_SET_EDIT_TEXT, 0, (LPARAM)copy);
+    if (!ok) free(copy);
+    lg=fopen("dropdebug.log","a");
+    if(lg){ fprintf(lg,"  post ok=%d err=%lu\n",(int)ok,(unsigned long)GetLastError()); fclose(lg); }
 }
 
 // Keep the current file and its chip visible while a tune is playing.  The
@@ -76,6 +84,8 @@ static void showPlaybackInfo(const char *file, const char *chips, const char *gd
 #define IDLoadButton   5
 #define IDBankCombo    6
 #define IDOpenButton   7
+#define IDPrevButton   8
+#define IDLoopCheck    9
 
 #define VGM_HEADER_LEN (0x80)
 #define SAMPLE_RATE (44100)
@@ -99,6 +109,7 @@ unsigned long adl_host_serial_bytes = 0;
 int com_num=3;
 int midiBank=0;
 int autoplay=1;
+int loopone=0;            // repeat the current file instead of advancing
 int octave=0;             // whole octaves the OPL2 pitch is shifted by
 int debuglog=0;   // write opl3usb.log when enabled in the ini
 
@@ -117,6 +128,7 @@ static void saveConfig()
     fprintf(conf,"debug=%d\n",debuglog);
     fprintf(conf,"octave=%d\n",octave);
     fprintf(conf,"midibank=%d\n",midiBank);
+    fprintf(conf,"loopone=%d\n",loopone);
     fclose(conf);
 }
 
@@ -217,6 +229,7 @@ void   gotoxy(int   x,   int   y){
     int wait=0;
     int stop=0;
     volatile int skipfile=0;   // set by the Next button, skips the current file
+    volatile int prevtrack=0;  // set by the Previous button, steps back one file
 
 // Audio-thread callbacks.  emuFill renders the local Nuked OPL3 that receives
 // the VGM register stream; midiFill pulls PCM straight out of libADLMIDI, so
@@ -514,6 +527,10 @@ void playMidiFile(const char *midfile)
 	ADL_MIDIPlayer *dev=NULL;
 	// No serial link: let libADLMIDI render into the waveOut stream instead.
 	bool emu=g_useEmu;
+	{
+		FILE *lg=fopen("dropdebug.log","a");
+		if(lg){ fprintf(lg,"playMidiFile [%s] emu=%d COM1=%p\n",midfile,(int)emu,(void*)COM1); fclose(lg); }
+	}
 
 	if(!emu && !COM1){
 		postEditText("Serial port is not open!");
@@ -661,58 +678,89 @@ int isPlayableFile(const char fname[])
 
 char vgmfile[1024]=".";	
 void play(){
-			DIR *pdir;
-				struct dirent *pent;
-				if(strlen(vgmfile)>0 && isPlayableFile(vgmfile)){
-					skipfile=0;      // a stale skip request must not eat this file
-					if(isMidiFile(vgmfile)) playMidiFile(vgmfile);
-					else playFile(vgmfile);
-				}
-				else{
-					if(strlen(vgmfile)==0){
-						strcpy(vgmfile,".");
-					}
-					postEditText(vgmfile);
-					while(!stop){
-						pdir=opendir(vgmfile); //opendir for playlist
-						if (!pdir){
-							printf ("opendir() failure; terminating");
-							exit(1);
-						}
-						errno=0;
-							wait=0;
-							int played=0;
-							while ((pent=readdir(pdir))){
-								
-								if(isPlayableFile(pent->d_name)){
-									played++;
-									gotoxy(1,3);
-									char filepath[1024];
-									sprintf(filepath,"%s\\%s",vgmfile,pent->d_name);
-									showPlaybackInfo(filepath,"detecting...","");
-									
-									OPL3off();
-									reset();
-									// Between tracks the worker is busy for ~0.6 s; a Next
-									// press during that gap belongs to the track that just
-									// ended, not to the one that is about to start.
-									skipfile=0;
-									
-									if(isMidiFile(filepath)) playMidiFile(filepath);
-									else playFile(filepath);
-								}
-								if(stop) break;
-								
-							}
-						if (errno){
-							printf ("readdir() failure; terminating");
-							exit(1);
-						}
-						closedir(pdir);
-						if(played==0) Sleep(200);   // nothing playable here, do not spin
-					}
-				}
-				stop =0;
+	// Previous and Loop one need the playlist up front, so a directory is
+	// scanned once per pass and played by index.
+	if(strlen(vgmfile)>0 && isPlayableFile(vgmfile)){
+		for(;;){
+			skipfile=0;      // a stale request must not eat this file
+			prevtrack=0;
+			if(isMidiFile(vgmfile)) playMidiFile(vgmfile);
+			else playFile(vgmfile);
+			if(stop) break;
+			if(prevtrack){   // only one file here: Previous restarts it
+				prevtrack=0;
+				skipfile=0;
+				continue;
+			}
+			if(skipfile){    // Next: nothing follows, so stop
+				skipfile=0;
+				break;
+			}
+			if(!loopone) break;
+		}
+		stop=0;
+		return;
+	}
+
+	if(strlen(vgmfile)==0) strcpy(vgmfile,".");
+	postEditText(vgmfile);
+	while(!stop){
+		std::vector<std::string> files;
+		DIR *pdir=opendir(vgmfile); //opendir for playlist
+		if (!pdir){
+			printf ("opendir() failure; terminating");
+			exit(1);
+		}
+		errno=0;
+		struct dirent *pent;
+		while ((pent=readdir(pdir))){
+			if(isPlayableFile(pent->d_name)) files.push_back(pent->d_name);
+		}
+		if (errno){
+			printf ("readdir() failure; terminating");
+			exit(1);
+		}
+		closedir(pdir);
+		if(files.empty()){
+			Sleep(200);   // nothing playable here, do not spin
+			continue;
+		}
+
+		wait=0;
+		size_t idx=0;
+		while(!stop && idx<files.size()){
+			gotoxy(1,3);
+			char filepath[1024];
+			snprintf(filepath,sizeof(filepath),"%s\\%s",vgmfile,files[idx].c_str());
+			showPlaybackInfo(filepath,"detecting...","");
+
+			OPL3off();
+			reset();
+			// Between tracks the worker is busy for ~0.6 s; a Next or Previous
+			// press during that gap belongs to the track that just ended, not
+			// to the one that is about to start.
+			skipfile=0;
+			prevtrack=0;
+
+			if(isMidiFile(filepath)) playMidiFile(filepath);
+			else playFile(filepath);
+			if(stop) break;
+
+			if(prevtrack){
+				prevtrack=0;
+				skipfile=0;
+				idx = (idx==0) ? files.size()-1 : idx-1;
+				continue;
+			}
+			if(skipfile){    // Next: advance even when Loop one is set
+				skipfile=0;
+				++idx;
+				continue;
+			}
+			if(!loopone) ++idx;
+		}
+	}
+	stop =0;
 } 
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
@@ -788,6 +836,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		MessageBox(NULL, "Window Creation Failed!","Error!", MB_ICONEXCLAMATION|MB_OK);
 		return 0;
 	}
+	// TEMPORARY: drop a file into the window shortly after startup.
+	if(getenv("OPL3USB_DROP_TEST")) SetTimer(hwnd,1,1000,NULL);
 	if(g_useEmu)
 		postEditText("No serial port - OPL3 emulator -> Windows audio");
 	// play the supported files of the current directory right away
@@ -876,6 +926,24 @@ static void fillBankCombo(HWND combo)
 	SendMessage(combo,CB_SETCURSEL,(WPARAM)midiBank,0);
 }
 
+// TEMPORARY: build an in-process HDROP so the drop handler can be tested.
+static void simulateDrop(HWND target, const char *path)
+{
+	size_t len = strlen(path) + 1;
+	HGLOBAL mem = GlobalAlloc(GHND, sizeof(DROPFILES) + len + 1);
+	if (!mem) return;
+	DROPFILES *df = (DROPFILES *)GlobalLock(mem);
+	if (!df) { GlobalFree(mem); return; }
+	memset(df, 0, sizeof(*df));
+	df->pFiles = sizeof(DROPFILES);
+	df->fWide = FALSE;
+	char *text = (char *)(df + 1);
+	memcpy(text, path, len);
+	text[len] = '\0';
+	GlobalUnlock(mem);
+	SendMessage(target, WM_DROPFILES, (WPARAM)mem, 0);
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	HDC         	hdc;
@@ -917,8 +985,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     int height=8;
 	switch (message) {
 		case WM_APP_SET_EDIT_TEXT:
+			{
+				FILE *lg=fopen("dropdebug.log","a");
+				if(lg){ fprintf(lg,"UI SET_EDIT lParam=%p\n",(void*)lParam); fclose(lg); }
+			}
 			if (lParam) {
-				SetWindowText(hwndEditbox, (const char *)lParam);
+				BOOL sok=SetWindowText(hwndEditbox, (const char *)lParam);
+				FILE *lg=fopen("dropdebug.log","a");
+				if(lg){ fprintf(lg,"  UI SetWindowText hwnd=%p ret=%d err=%lu len=%d\n",
+				                (void*)hwndEditbox,(int)sok,(unsigned long)GetLastError(),
+				                hwndEditbox?GetWindowTextLength(hwndEditbox):-1); fclose(lg); }
 				free((void *)lParam);
 			}
 			return 0;
@@ -981,9 +1057,47 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			if (!hwndEditbox) MessageBox(NULL,"???????","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndEditbox,SW_SHOW);
             UpdateWindow(hwndEditbox);
+			DragAcceptFiles(hwnd,TRUE);
 			}
         	return 0 ;
-	          
+
+		case WM_TIMER:
+			if (wParam == 1) {
+				KillTimer(hwnd, 1);
+				const char *dropPath = getenv("OPL3USB_DROP_TEST");
+				if (dropPath) simulateDrop(hwnd, dropPath);
+			}
+			return 0;
+
+		case WM_DROPFILES:
+			{
+			HDROP drop=(HDROP)wParam;
+			UINT count=DragQueryFileA(drop,0xFFFFFFFF,NULL,0);
+			char path[1024]={0};
+			bool found=false;
+			// play the first dropped file this player can handle
+			for(UINT i=0;i<count;i++){
+				if(DragQueryFileA(drop,i,path,sizeof(path))==0) continue;
+				if(isPlayableFile(path)){ found=true; break; }
+			}
+			{
+				FILE *lg=fopen("dropdebug.log","a");
+				if(lg){ fprintf(lg,"WM_DROPFILES count=%u path=[%s] found=%d\n",count,path,(int)found); fclose(lg); }
+			}
+			if(found){
+				strcpy(vgmfile,path);
+				start();
+			}else if(path[0]){
+				char text[1200];
+				snprintf(text,sizeof(text),
+				         "Unsupported file:\r\n%s\r\n\r\nDrop .vgm, .vgz, .mid or .midi files.",
+				         path);
+				postEditText(text);
+			}
+			DragFinish(drop);
+			}
+			return 0;
+
 	    case WM_PAINT:
 			
 			
