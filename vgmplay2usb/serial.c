@@ -17,11 +17,14 @@ PORT OpenPort(int idx)
 	
 	if (hComm == INVALID_HANDLE_VALUE)
 		return NULL;
+	/* MIDI phrases can emit a burst of register writes; a larger driver
+	   buffer keeps WriteFile() from timing out in the middle of a packet. */
+	SetupComm(hComm, 65536, 65536);
 	COMMTIMEOUTS timeouts = { 0 };
 	timeouts.ReadIntervalTimeout = 50;
 	timeouts.ReadTotalTimeoutConstant = 50;
 	timeouts.ReadTotalTimeoutMultiplier = 10;
-	timeouts.WriteTotalTimeoutConstant = 50;
+	timeouts.WriteTotalTimeoutConstant = 100;
 	timeouts.WriteTotalTimeoutMultiplier = 10;
 
 	if (SetCommTimeouts(hComm, &timeouts) == FALSE)
@@ -79,7 +82,7 @@ int SetPortStopBits(PORT com_port, int bits)
 	return Status;
 }
 
-//Ä¬ÈÏÎªÎÞÐ£Ñé¡£NOPARITY 0£» ODDPARITY 1£»EVENPARITY 2£»MARKPARITY 3£»SPACEPARITY 4
+//Ä¬ï¿½ï¿½Îªï¿½ï¿½Ð£ï¿½é¡£NOPARITY 0ï¿½ï¿½ ODDPARITY 1ï¿½ï¿½EVENPARITY 2ï¿½ï¿½MARKPARITY 3ï¿½ï¿½SPACEPARITY 4
 int SetPortParity(PORT com_port, int parity)
 {
 	DCB dcbSerialParams = { 0 };
