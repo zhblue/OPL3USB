@@ -36,18 +36,12 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 // deadlock when the UI thread is joining the worker (for example on Play).
 static void postEditText(const char *text)
 {
-    FILE *lg=fopen("dropdebug.log","a");
-    if(lg){ fprintf(lg,"postEditText edit=%p parent=%p text=[%.160s]\n",
-                    (void*)hwndEditbox,
-                    (void*)(hwndEditbox?GetParent(hwndEditbox):NULL),text); fclose(lg); }
     size_t size = strlen(text) + 1;
     char *copy = (char *)malloc(size);
     if (!copy) return;
     memcpy(copy, text, size);
-    BOOL ok=PostMessage(GetParent(hwndEditbox), WM_APP_SET_EDIT_TEXT, 0, (LPARAM)copy);
-    if (!ok) free(copy);
-    lg=fopen("dropdebug.log","a");
-    if(lg){ fprintf(lg,"  post ok=%d err=%lu\n",(int)ok,(unsigned long)GetLastError()); fclose(lg); }
+    if (!PostMessage(GetParent(hwndEditbox), WM_APP_SET_EDIT_TEXT, 0, (LPARAM)copy))
+        free(copy);
 }
 
 // Keep the current file and its chip visible while a tune is playing.  The
@@ -527,10 +521,6 @@ void playMidiFile(const char *midfile)
 	ADL_MIDIPlayer *dev=NULL;
 	// No serial link: let libADLMIDI render into the waveOut stream instead.
 	bool emu=g_useEmu;
-	{
-		FILE *lg=fopen("dropdebug.log","a");
-		if(lg){ fprintf(lg,"playMidiFile [%s] emu=%d COM1=%p\n",midfile,(int)emu,(void*)COM1); fclose(lg); }
-	}
 
 	if(!emu && !COM1){
 		postEditText("Serial port is not open!");
@@ -790,6 +780,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		fscanf(conf,"debug=%d\n",&debuglog);
 		fscanf(conf,"octave=%d\n",&octave);
 		fscanf(conf,"midibank=%d\n",&midiBank);
+		fscanf(conf,"loopone=%d\n",&loopone);
 		fclose(conf);
 	}
 	if(midiBank<0 || midiBank>=adl_getBanksCount()) midiBank=0;
@@ -836,8 +827,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		MessageBox(NULL, "Window Creation Failed!","Error!", MB_ICONEXCLAMATION|MB_OK);
 		return 0;
 	}
-	// TEMPORARY: drop a file into the window shortly after startup.
-	if(getenv("OPL3USB_DROP_TEST")) SetTimer(hwnd,1,1000,NULL);
 	if(g_useEmu)
 		postEditText("No serial port - OPL3 emulator -> Windows audio");
 	// play the supported files of the current directory right away
@@ -861,6 +850,7 @@ void start(){
 		thPlay->join();          // and wait until it is really gone
 	}
 	stop=0;
+	prevtrack=0;
 	thPlay=new thread(play);
 }
 void load(){
@@ -926,24 +916,6 @@ static void fillBankCombo(HWND combo)
 	SendMessage(combo,CB_SETCURSEL,(WPARAM)midiBank,0);
 }
 
-// TEMPORARY: build an in-process HDROP so the drop handler can be tested.
-static void simulateDrop(HWND target, const char *path)
-{
-	size_t len = strlen(path) + 1;
-	HGLOBAL mem = GlobalAlloc(GHND, sizeof(DROPFILES) + len + 1);
-	if (!mem) return;
-	DROPFILES *df = (DROPFILES *)GlobalLock(mem);
-	if (!df) { GlobalFree(mem); return; }
-	memset(df, 0, sizeof(*df));
-	df->pFiles = sizeof(DROPFILES);
-	df->fWide = FALSE;
-	char *text = (char *)(df + 1);
-	memcpy(text, path, len);
-	text[len] = '\0';
-	GlobalUnlock(mem);
-	SendMessage(target, WM_DROPFILES, (WPARAM)mem, 0);
-}
-
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	HDC         	hdc;
@@ -957,6 +929,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 	static HWND 	hwndLoad;
 	static HWND 	hwndOpen;
 	static HWND 	hwndBank;
+	static HWND 	hwndLoop;
 
 	string			strXy;
 	char			x[5], y[5];
@@ -985,16 +958,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     int height=8;
 	switch (message) {
 		case WM_APP_SET_EDIT_TEXT:
-			{
-				FILE *lg=fopen("dropdebug.log","a");
-				if(lg){ fprintf(lg,"UI SET_EDIT lParam=%p\n",(void*)lParam); fclose(lg); }
-			}
 			if (lParam) {
-				BOOL sok=SetWindowText(hwndEditbox, (const char *)lParam);
-				FILE *lg=fopen("dropdebug.log","a");
-				if(lg){ fprintf(lg,"  UI SetWindowText hwnd=%p ret=%d err=%lu len=%d\n",
-				                (void*)hwndEditbox,(int)sok,(unsigned long)GetLastError(),
-				                hwndEditbox?GetWindowTextLength(hwndEditbox):-1); fclose(lg); }
+				SetWindowText(hwndEditbox, (const char *)lParam);
 				free((void *)lParam);
 			}
 			return 0;
@@ -1004,7 +969,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			GetClientRect(hwnd,&client);
 			int editW=client.right-2*cxChar;
 			int comboX=7*cxChar;
-			int comboW=client.right-comboX-2*cxChar;
+			int loopX=client.right-13*cxChar;
+			int comboW=loopX-comboX-cxChar;
+			if(comboW<4*cxChar) comboW=4*cxChar;
 			hwndEditbox = CreateWindow( TEXT("edit"),NULL,
 										WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE,
                                    		cxChar * 1, cyChar * 0.2,
@@ -1012,22 +979,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 										hwnd,(HMENU)IDeditBox,NULL,NULL);
 			hwndPlay = CreateWindow ( TEXT("button"), TEXT("Play"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 2, cyChar * height,
+                                   		cxChar * 10, cyChar * height,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDPlayButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
+			CreateWindow ( TEXT("button"), TEXT("Prev"),
+                            			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                                   		cxChar * 2, cyChar * height,
+                                   		5 * cxChar, 1.5 * cyChar,
+                                   		hwnd, (HMENU)IDPrevButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndNext = CreateWindow ( TEXT("button"), TEXT("Next"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 12, cyChar * height,
+                                   		cxChar * 18, cyChar * height,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDNextButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndLoad = CreateWindow ( TEXT("button"), TEXT("Load"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 22, cyChar * height,
+                                   		cxChar * 26, cyChar * height,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDLoadButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndOpen = CreateWindow ( TEXT("button"), TEXT("Open"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 32, cyChar * height,
+                                   		cxChar * 34, cyChar * height,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDOpenButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			CreateWindow ( TEXT("static"), TEXT("Bank:"),
@@ -1041,6 +1013,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                                    		comboW, 200,
                                    		hwnd, (HMENU)IDBankCombo, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			fillBankCombo(hwndBank);
+			hwndLoop = CreateWindow ( TEXT("button"), TEXT("Loop one"),
+                            			WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                                   		loopX, cyChar * 10.2,
+                                   		12 * cxChar, 1.5 * cyChar,
+                                   		hwnd, (HMENU)IDLoopCheck, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
+			if(hwndLoop && loopone) SendMessage(hwndLoop,BM_SETCHECK,BST_CHECKED,0);
 			if (!hwndPlay) MessageBox(NULL,"??????","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndPlay,SW_SHOW);
             UpdateWindow(hwndPlay);
@@ -1053,6 +1031,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			// ??????
 			::SendMessage(hwndEditbox, WM_SETFONT, (WPARAM)hFont, 0);
 			::SendMessage(hwndBank, WM_SETFONT, (WPARAM)hFont, 0);
+			::SendMessage(hwndLoop, WM_SETFONT, (WPARAM)hFont, 0);
 										
 			if (!hwndEditbox) MessageBox(NULL,"???????","Message",MB_OK|MB_ICONERROR);
 			ShowWindow(hwndEditbox,SW_SHOW);
@@ -1060,14 +1039,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			DragAcceptFiles(hwnd,TRUE);
 			}
         	return 0 ;
-
-		case WM_TIMER:
-			if (wParam == 1) {
-				KillTimer(hwnd, 1);
-				const char *dropPath = getenv("OPL3USB_DROP_TEST");
-				if (dropPath) simulateDrop(hwnd, dropPath);
-			}
-			return 0;
 
 		case WM_DROPFILES:
 			{
@@ -1079,10 +1050,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			for(UINT i=0;i<count;i++){
 				if(DragQueryFileA(drop,i,path,sizeof(path))==0) continue;
 				if(isPlayableFile(path)){ found=true; break; }
-			}
-			{
-				FILE *lg=fopen("dropdebug.log","a");
-				if(lg){ fprintf(lg,"WM_DROPFILES count=%u path=[%s] found=%d\n",count,path,(int)found); fclose(lg); }
 			}
 			if(found){
 				strcpy(vgmfile,path);
@@ -1136,6 +1103,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			    	skipfile=1;
 				}
 				
+				break;
+			case IDPrevButton:
+			    if(thPlay!=NULL){
+			    	// leave the current file and step back one place
+			    	prevtrack=1;
+			    	skipfile=1;
+				}
+				
+				break;
+			case IDLoopCheck:
+				if(HIWORD(wParam)==BN_CLICKED){
+					loopone=(SendMessage(hwndLoop,BM_GETCHECK,0,0)==BST_CHECKED);
+					saveConfig();
+				}
 				break;
 			case IDLoadButton: 
 				load();
