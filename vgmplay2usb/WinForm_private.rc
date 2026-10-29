@@ -27,12 +27,12 @@ FILETYPE VFT_APP
     {
       VALUE "CompanyName", "zhblue"
       VALUE "FileVersion", "1.0.0.0"
-      VALUE "FileDescription", "OPL3USB VGM Player"
+      VALUE "FileDescription", "OPL3USB VGM/MIDI Player"
       VALUE "InternalName", ""
       VALUE "LegalCopyright", ""
       VALUE "LegalTrademarks", ""
       VALUE "OriginalFilename", ""
-      VALUE "ProductName", "OPL3USB VGM Player"
+      VALUE "ProductName", "OPL3USB VGM/MIDI Player"
       VALUE "ProductVersion", "1.0.0.0"
     }
   }

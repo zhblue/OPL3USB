@@ -92,6 +92,30 @@ static AudioOut g_audio;
 static ADL_MIDIPlayer *g_midiDev = NULL;      // called by the audio thread only
 static std::atomic<bool> g_midiDone(false);
 
+// Playback position shared with the UI (seek bar and title bar).
+static std::atomic<double> g_posSec(0.0);
+static std::atomic<double> g_durSec(0.0);
+static std::atomic<double> g_seekReq(-1.0);
+static std::atomic<bool>   g_playing(false);
+static RECT                g_seekBar;
+
+static void publishPos(double sec)
+{
+    if (sec < 0.0) sec = 0.0;
+    g_posSec.store(sec);
+}
+
+static void requestSeek(double sec)
+{
+    if (!g_playing.load()) return;
+    double dur = g_durSec.load();
+    if (dur <= 0.0) return;
+    if (sec < 0.0) sec = 0.0;
+    if (sec > dur) sec = dur;
+    g_posSec.store(sec);
+    g_seekReq.store(sec);
+}
+
 // libADLMIDI writes to the COM port handle this application already owns
 // (see the "@host" support in its ChipSerialPort); opening COM3 a second
 // time would fail because serial.c opens it without sharing.
@@ -184,9 +208,10 @@ void OPL3off()
      Sleep(150);
   
 }
-void reset()
+// Zero every register of both banks.  Seeking replays the VGM stream from the
+// data start, so the chip has to be brought back to a known silent state first.
+static void clearRegisters()
 {
-
      unsigned char reset[]={0x5f,0x05,0x01};
      OPL3write(reset);
      reset[1]=0x04;
@@ -198,12 +223,13 @@ void reset()
      	reset[1]=add;
      	reset[0]=0x5e;
      	OPL3write(reset);
-     	//Sleep(1);
      	reset[0]=0x5f;
      	OPL3write(reset);
-     	//Sleep(1);
 	 }
-	 
+}
+void reset()
+{
+     clearRegisters();
 	Sleep(100);
     OPL3off();
 }
@@ -242,6 +268,18 @@ static bool midiFill(short *buf, int frames)
         g_midiDone = true;
         return false;
     }
+    // The seek bar only posts a position; the sequencer must be moved on the
+    // thread that also calls adl_play(), so it happens here.
+    double seek=g_seekReq.exchange(-1.0);
+    if (seek >= 0.0) {
+        adl_positionSeek(g_midiDev, seek);
+        // LibADLMIDI rewinds to the start when the target is at or past the
+        // last event; near the end that means "stop", not "play again".
+        if (seek > 1.0 && adl_positionTell(g_midiDev) < 0.05) {
+            g_midiDone = true;
+            return false;
+        }
+    }
     int got = adl_play(g_midiDev, frames * 2, buf);
     if (got <= 0) {
         g_midiDone = true;
@@ -249,6 +287,7 @@ static bool midiFill(short *buf, int frames)
     }
     if (got < frames * 2)
         memset(buf + got, 0, (size_t)(frames * 2 - got) * sizeof(short));
+    publishPos(adl_positionTell(g_midiDev));
     if (adl_atEnd(g_midiDev))
         g_midiDone = true;
     return got == frames * 2;
@@ -284,7 +323,7 @@ static inline double now_us(void){
 // sleep until the absolute deadline (same unit as now_us), aborts on stop
 static void wait_until_us(double deadline_us){
 	for(;;){
-		if(stop || skipfile) return;
+		if(stop || skipfile || g_seekReq.load()>=0.0) return;
 		double remain=deadline_us-now_us();
 		if(remain<=0) return;
 		if(remain>250.0 && hrTimer){
@@ -335,7 +374,10 @@ void playFile(char * vgmfile){
 	    	vgmchip_desc(&chip,chipdesc,sizeof(chipdesc));
 	    	chipKnown=vgmchip_mask(&chip)!=0;
 	    	showPlaybackInfo(vgmfile,chipdesc,"");
-	    	printf("data offset:%02X\n",(vgm_header[0x34]&0xff)+0x34);
+	    	long dataOffset=le_int(&vgm_header[0x34])+0x34;
+	    	long long totalSamples=le_int(&vgm_header[0x18]);
+	    	if(totalSamples<0) totalSamples=0;
+	    	printf("data offset:%02X\n",dataOffset);
 	    	//printf("OPL2:%02X %02X %02X \n",vgm_header[0x50]&0xff,vgm_header[0x51]&0xff,vgm_header[0x52]&0xff);
 	    	printf("OPL2:%d Hz                \n",le_int(&vgm_header[0x50]));
 	    	gd3offset=le_int(&vgm_header[0x14]);
@@ -367,11 +409,15 @@ void playFile(char * vgmfile){
 	    		showPlaybackInfo(vgmfile,chipdesc,gd3info);
 			}
 	    
+	    	g_durSec.store(totalSamples>0 ? (double)totalSamples/(double)SAMPLE_RATE : 0.0);
+	    	publishPos(0.0);
+	    	g_seekReq.store(-1.0);
+	    	g_playing.store(true);
 	    	reset();
 	    	if(le_int(&vgm_header[0x50])) OPL3off();
 	    	//printf("OPL3:%02X %02X %02X \n",vgm_header[0x5c],vgm_header[0x5d],vgm_header[0x5e]&0xff);
 	    	printf("OPL3:%d Hz                \n",vgm_header[0x5c]+(vgm_header[0x5d]<<8)+((vgm_header[0x5e]&0xff)<<16));
-	    	vgm_src_seek(&vgm,(vgm_header[0x34]&0xff)+0x34,SEEK_SET);
+	    	vgm_src_seek(&vgm,dataOffset,SEEK_SET);
 	    	int count=0;
 	    	printf("Up/Down : speed ... Esc: next ... Ctrl+C: Stop \n");
 	    	started=0;
@@ -381,11 +427,30 @@ void playFile(char * vgmfile){
 	    	// of the next event is calculated from that counter, therefore the
 	    	// timing never drifts, no matter how long the file is.
 	    	long long samples=0;
+	    	long long seekTarget=-1;   // >=0: fast-forwarding after a bar click
+	    	long long published=0;
 	    	double   t0=now_us();
 	    	double   rate=(double)speed*1000.0;      // samples per second
 	    	int      endofdata=0;
 	    	while(vgm_src_read(&vgm,op,3)==3 && !endofdata && !skipfile){
 	    	
+	    		if(g_seekReq.load()>=0.0){
+	    			// A new position was clicked: zero the chip, then replay the
+	    			// stream from the data start without waiting until the
+	    			// register state of the target time is rebuilt.
+	    			double req=g_seekReq.exchange(-1.0);
+	    			vgm_src_seek(&vgm,dataOffset,SEEK_SET);
+	    			wait=0;
+	    			samples=0;
+	    			published=0;
+	    			endofdata=0;
+	    			seekTarget=(long long)(req*(double)SAMPLE_RATE+0.5);
+	    			if(totalSamples>0 && seekTarget>totalSamples) seekTarget=totalSamples;
+	    			if(seekTarget<0) seekTarget=0;
+	    			clearRegisters();
+	    			continue;   // op[] belonged to the old position, read afresh
+	    		}
+
 	    		int writelen=vgmchip_write_len(op[0]);
 	    		if(writelen>0){
  	    		   unsigned char chipout[VGMCHIP_MAXOUT][3];
@@ -474,10 +539,23 @@ void playFile(char * vgmfile){
 				   				   if(endofdata) break;
 				   if(wait>0){
 				   	samples+=wait;
-				   	if(COM1) FlushFileBuffers(COM1);          // the chip gets it now
-				   	wait_until_us(t0+(double)samples*1000000.0/rate);
+				   	if(seekTarget<0){
+				   		if(COM1) FlushFileBuffers(COM1);          // the chip gets it now
+				   		wait_until_us(t0+(double)samples*1000000.0/rate);
+				   	}
 				   }
 				   wait=0;
+				   if(seekTarget>=0 && samples>=seekTarget){
+				   	// fast-forward finished: line the wall clock up with the new
+				   	// position so playback continues seamlessly from here
+				   	seekTarget=-1;
+				   	t0=now_us()-(double)samples*1000000.0/rate;
+				   	published=samples;
+				   	publishPos((double)samples/(double)SAMPLE_RATE);
+				   }else if(seekTarget<0 && samples-published>=1024){
+				   	published=samples;
+				   	publishPos((double)samples/(double)SAMPLE_RATE);
+				   }
 				   if(stop) break;
 				}
 				//	if(wait<0) break;
@@ -499,6 +577,9 @@ void playFile(char * vgmfile){
 	    	vgm_src_close(&vgm);
 	    	reset();
 	    	OPL3off();
+	    	g_playing.store(false);
+	    	g_seekReq.store(-1.0);
+	    	publishPos(0.0);
 		}else{
 			postEditText("Open failed!");
 								
@@ -575,6 +656,10 @@ void playMidiFile(const char *midfile)
 	showPlaybackInfo(midfile,emu?"MIDI -> OPL3 emulator":"MIDI -> YMF262",info);
 	printf("playing midi: %s (bank %d, %s)\n",midfile,midiBank,emu?"emulator":"serial");
 
+	g_durSec.store(length>0.0?length:0.0);
+	publishPos(0.0);
+	g_seekReq.store(-1.0);
+	g_playing.store(true);
 	double t0=now_us();
 	if(emu){
 		// The sound card clocks the score: every refilled waveOut buffer asks
@@ -601,6 +686,20 @@ void playMidiFile(const char *midfile)
 		double tick_delay=0.0;
 
 		while(!stop && !skipfile){
+			// The seek bar posts a position; the sequencer is moved here, on
+			// the thread that also drives adl_tickEvents().
+			double req=g_seekReq.exchange(-1.0);
+			if(req>=0.0){
+				adl_positionSeek(dev,req);
+				// A target at/after the last event rewinds the sequencer;
+				// near the end treat that as end of song, not a restart.
+				if(req>1.0 && adl_positionTell(dev)<0.05)
+					break;
+				last=now_us();
+				last_flush=last;
+				advance=1e-9;
+				tick_delay=0.0;
+			}
 			tick_delay=adl_tickEvents(dev,advance,granularity);
 			double now=now_us();
 
@@ -615,6 +714,7 @@ void playMidiFile(const char *midfile)
 
 			double next=tick_delay<min_delay?tick_delay:min_delay;
 			if(next>0.0) wait_until_us(now+next*1000000.0);
+			publishPos(adl_positionTell(dev));
 
 			double after=now_us();
 			advance=(after-last)/1000000.0;
@@ -640,6 +740,9 @@ void playMidiFile(const char *midfile)
 		}
 	}
 	adl_close(dev);
+	g_playing.store(false);
+	g_seekReq.store(-1.0);
+	publishPos(0.0);
 }
 
 int isVgmFile(const char fname[])
@@ -753,6 +856,23 @@ void play(){
 	stop =0;
 } 
 
+// A file passed on the command line (Windows "Open with"/file association)
+// is loaded instead of the files of the current directory.
+static bool commandLineFile(char *path, size_t pathLen)
+{
+	int argc=0;
+	LPWSTR *argv=CommandLineToArgvW(GetCommandLineW(),&argc);
+	if(!argv) return false;
+
+	bool ok=false;
+	if(argc>1 && argv[1][0]){
+		int n=WideCharToMultiByte(CP_ACP,0,argv[1],-1,path,(int)pathLen,NULL,NULL);
+		ok = n>0 && isPlayableFile(path);
+	}
+	LocalFree(argv);
+	return ok;
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
 	WNDCLASSEX wc;
 	HWND hwnd, hwndDT;
@@ -784,6 +904,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		fclose(conf);
 	}
 	if(midiBank<0 || midiBank>=adl_getBanksCount()) midiBank=0;
+	char openFileArg[1024]={0};
+	bool openOnStart=commandLineFile(openFileArg,sizeof(openFileArg));
+	if(openOnStart) strcpy(vgmfile,openFileArg);
     timing_init();
     printf("open com%d \n",com_num);
 	int probePort=com_num;
@@ -817,9 +940,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	hwnd = CreateWindowEx(WS_EX_CLIENTEDGE,wc.lpszClassName,
 		"OPL3USB VGM/MIDI Player",WS_VISIBLE|WS_OVERLAPPEDWINDOW,
 		(dtWidth-380)/2,   /*????*/ 
-		(dtHeight-235)/2,
+		(dtHeight-265)/2,
 		400,
-		270,
+		300,
 		NULL,NULL,hInstance,NULL);
 	//MoveWindow(hwnd, (width-640)/2, (height-480)/2, 640, 480, FALSE);
   			
@@ -829,8 +952,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 	}
 	if(g_useEmu)
 		postEditText("No serial port - OPL3 emulator -> Windows audio");
-	// play the supported files of the current directory right away
-	if(autoplay){
+	// A file named on the command line wins over the autoplay setting.
+	if(openOnStart || autoplay){
 		PostMessage(hwnd, WM_COMMAND, (WPARAM)IDPlayButton, 0);
 	}
 	while(GetMessage(&msg, NULL, 0, 0) > 0) { 
@@ -916,6 +1039,55 @@ static void fillBankCombo(HWND combo)
 	SendMessage(combo,CB_SETCURSEL,(WPARAM)midiBank,0);
 }
 
+// The progress bar is drawn by the window itself: a plain static control
+// cannot report where inside it the user clicked, which clicking to seek
+// needs.
+static void drawSeekBar(HDC hdc)
+{
+	RECT r=g_seekBar;
+	if(r.right<=r.left || r.bottom<=r.top) return;
+	HBRUSH back=CreateSolidBrush(RGB(0x30,0x12,0x0c));
+	FillRect(hdc,&r,back);
+	DeleteObject(back);
+
+	double dur=g_durSec.load();
+	double pos=g_posSec.load();
+	if(dur>0.0 && pos>0.0){
+		double frac=pos/dur;
+		if(frac>1.0) frac=1.0;
+		RECT fill=r;
+		fill.left=r.left+(LONG)((double)(r.right-r.left)*frac);
+		if(fill.left>r.left){
+			HBRUSH fg=CreateSolidBrush(RGB(0xff,0xd2,0x4a));
+			FillRect(hdc,&fill,fg);
+			DeleteObject(fg);
+		}
+	}
+	FrameRect(hdc,&r,(HBRUSH)GetStockObject(WHITE_BRUSH));
+}
+
+// Title bar: remaining time while a tune is playing, plain name otherwise.
+static void updateTitle(HWND hwnd)
+{
+	static char last[160]="";
+	char title[160];
+	if(g_playing.load() && g_durSec.load()>0.0){
+		double dur=g_durSec.load();
+		double pos=g_posSec.load();
+		double rem=dur>pos?dur-pos:0.0;
+		int total=(int)(rem+0.999);
+		if(total<0) total=0;
+		snprintf(title,sizeof(title),"OPL3USB VGM/MIDI Player - %d:%02d remaining",
+		         total/60,total%60);
+	}else{
+		strcpy(title,"OPL3USB VGM/MIDI Player");
+	}
+	if(strcmp(title,last)!=0){
+		SetWindowText(hwnd,title);
+		strcpy(last,title);
+	}
+}
+
 LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	HDC         	hdc;
@@ -972,6 +1144,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			int loopX=client.right-13*cxChar;
 			int comboW=loopX-comboX-cxChar;
 			if(comboW<4*cxChar) comboW=4*cxChar;
+			// full width progress bar between the text box and the buttons
+			g_seekBar.left=cxChar;
+			g_seekBar.right=client.right-cxChar;
+			g_seekBar.top=(int)(cyChar*8.35);
+			g_seekBar.bottom=g_seekBar.top+(int)(cyChar*1.05);
+			if(g_seekBar.bottom-g_seekBar.top<10) g_seekBar.bottom=g_seekBar.top+10;
+			if(g_seekBar.right<g_seekBar.left+40) g_seekBar.right=g_seekBar.left+40;
+			int buttonY=(int)(cyChar*10.2);
 			hwndEditbox = CreateWindow( TEXT("edit"),NULL,
 										WS_CHILD | WS_VISIBLE | WS_BORDER | ES_MULTILINE,
                                    		cxChar * 1, cyChar * 0.2,
@@ -979,43 +1159,43 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 										hwnd,(HMENU)IDeditBox,NULL,NULL);
 			hwndPlay = CreateWindow ( TEXT("button"), TEXT("Play"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 10, cyChar * height,
+                                   		cxChar * 10, buttonY,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDPlayButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			CreateWindow ( TEXT("button"), TEXT("Prev"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 2, cyChar * height,
+                                   		cxChar * 2, buttonY,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDPrevButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndNext = CreateWindow ( TEXT("button"), TEXT("Next"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 18, cyChar * height,
+                                   		cxChar * 18, buttonY,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDNextButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndLoad = CreateWindow ( TEXT("button"), TEXT("Load"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 26, cyChar * height,
+                                   		cxChar * 26, buttonY,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDLoadButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndOpen = CreateWindow ( TEXT("button"), TEXT("Open"),
                             			WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                   		cxChar * 34, cyChar * height,
+                                   		cxChar * 34, buttonY,
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDOpenButton, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			CreateWindow ( TEXT("static"), TEXT("Bank:"),
                             			WS_CHILD | WS_VISIBLE,
-                                   		cxChar * 2, cyChar * 10.5,
+                                   		cxChar * 2, (int)(cyChar * 12.6),
                                    		5 * cxChar, 1.5 * cyChar,
                                    		hwnd, NULL, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			hwndBank = CreateWindow ( TEXT("combobox"), NULL,
                             			WS_CHILD | WS_VISIBLE | WS_VSCROLL | CBS_DROPDOWNLIST,
-                                   		comboX, cyChar * 10.2,
+                                   		comboX, (int)(cyChar * 12.2),
                                    		comboW, 200,
                                    		hwnd, (HMENU)IDBankCombo, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			fillBankCombo(hwndBank);
 			hwndLoop = CreateWindow ( TEXT("button"), TEXT("Loop one"),
                             			WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                   		loopX, cyChar * 10.2,
+                                   		loopX, (int)(cyChar * 12.2),
                                    		12 * cxChar, 1.5 * cyChar,
                                    		hwnd, (HMENU)IDLoopCheck, ((LPCREATESTRUCT) lParam)->hInstance, NULL);
 			if(hwndLoop && loopone) SendMessage(hwndLoop,BM_SETCHECK,BST_CHECKED,0);
@@ -1037,6 +1217,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			ShowWindow(hwndEditbox,SW_SHOW);
             UpdateWindow(hwndEditbox);
 			DragAcceptFiles(hwnd,TRUE);
+			SetTimer(hwnd,1,200,NULL);   // seek bar and remaining time
 			}
         	return 0 ;
 
@@ -1069,6 +1250,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			
 			
 			hdc = BeginPaint (hwnd, &ps);
+			drawSeekBar(hdc);
 	    	//SetRect(&rect, 10, 10, 300, 200);
     	   // FrameRect(hdc, &rect, (HBRUSH)GetStockObject(BLACK_BRUSH));
 			//GetClientRect (hwnd, &rect);
@@ -1078,6 +1260,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
             //SetTextColor(hdc, RGB(255,0,0)); //???RGB?????????
 			//DrawText(hdc, TEXT(" Hello, Dev-C++! "), -1, &rect, DT_SINGLELINE | DT_TOP | DT_LEFT);
 			EndPaint(hwnd, &ps);
+			return 0;
+
+		case WM_TIMER:
+			if(wParam==1){
+				updateTitle(hwnd);
+				InvalidateRect(hwnd,&g_seekBar,FALSE);
+			}
 			return 0;
  
 	    case WM_SIZE:
@@ -1140,7 +1329,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			}
 			return 0; 
  
-		case WM_LBUTTONDOWN: // WM_LBUTTONDOWN??????????
+		case WM_LBUTTONDOWN: { // a click on the bar seeks, elsewhere it sets speed
+			POINT pt;
+			pt.x=(short)LOWORD(lParam);   // client coordinates of the click
+			pt.y=(short)HIWORD(lParam);
+			if(PtInRect(&g_seekBar,pt)){
+				double dur=g_durSec.load();
+				if(dur>0.0){
+					double frac=(double)(pt.x-g_seekBar.left)/
+					            (double)(g_seekBar.right-g_seekBar.left);
+					requestSeek(frac*dur);
+				}
+				return 0;
+			}
 			GetCursorPos(&mouse);
 			GetWindowRect(hwnd, &rect);
 			mX=mouse.x-rect.left;
@@ -1151,6 +1352,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			//SetWindowText(hwndEditbox,strXy.c_str());
 			//MessageBox(NULL, strXy.c_str(), "", MB_ICONASTERISK);
 			return 0;
+		}
  
 		case WM_CLOSE:
 			if (IDYES==MessageBox(hwnd, "Quit", "Exit", MB_ICONQUESTION | MB_YESNO)){
@@ -1164,6 +1366,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 			return 0;
 		  
 		case WM_DESTROY:
+			KillTimer(hwnd,1);
 			stop=1;
 			//ShellAbout(hwnd, "???????", "??,?????????!", NULL);
 			if(thPlay!=NULL && thPlay->joinable()) thPlay->join();
